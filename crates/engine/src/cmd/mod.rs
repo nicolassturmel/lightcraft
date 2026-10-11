@@ -5,6 +5,7 @@
 //! `edit.*` (undo/redo), and queries (`catalog.query`, `photo.inspect`, `develop.get`…).
 
 mod activity;
+mod apple;
 mod before;
 pub(crate) mod browse;
 mod color;
@@ -127,6 +128,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         let mut v = Vec::new();
         v.extend(edit::specs());
         v.extend(library::specs());
+        v.extend(apple::specs());
         v.extend(develop::specs());
         v.extend(color::specs());
         v.extend(curves::specs());

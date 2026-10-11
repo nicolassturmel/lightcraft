@@ -70,6 +70,20 @@ for bin in lightcraft lightcraft-cli; do
   lipo -info "$WORK/bin/$bin"
 done
 
+# Bundle a separately signed system-framework helper beside both executables. Cargo embeds
+# the same helper for development, while releases use this sibling for stable TCC identity.
+APPLE_HELPERS=()
+for t in "${TARGETS[@]}"; do
+  case "$t" in aarch64-*) swift_arch=arm64 ;; x86_64-*) swift_arch=x86_64 ;; esac
+  helper="$WORK/bin/lightcraft-apple-$swift_arch"
+  xcrun swiftc -O -swift-version 5 -parse-as-library -target "$swift_arch-apple-macosx11.0" \
+    "$ROOT/crates/apple/native/AppleBridge.swift" \
+    -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
+    -Xlinker "$ROOT/crates/apple/native/Info.plist" -o "$helper"
+  APPLE_HELPERS+=("$helper")
+done
+lipo -create -output "$WORK/bin/lightcraft-apple" "${APPLE_HELPERS[@]}"
+
 # ---- signing helpers ---------------------------------------------------------------------------
 sign() {
   # Hardened runtime + secure timestamp for a real identity; ad-hoc can't be timestamped.
@@ -102,6 +116,7 @@ echo "==> assembling $APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # Executable and icon carry the display name (CFBundleExecutable / CFBundleIconFile).
 cp "$WORK/bin/lightcraft" "$APP/Contents/MacOS/LightCraft"
+cp "$WORK/bin/lightcraft-apple" "$APP/Contents/MacOS/lightcraft-apple"
 cp "$ROOT/assets/app-icon/lightcraft.icns" "$APP/Contents/Resources/LightCraft.icns"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHORT_VERSION@/$SHORT_VERSION/g" \
   -e "s/@BUILD_SHA@/${LIGHTCRAFT_BUILD_SHA:-unknown}/g" \
@@ -113,7 +128,8 @@ mkdir -p "$APP/Contents/Resources/Licenses"
 copy_docs "$APP/Contents/Resources/Licenses"
 
 # Sign inside-out: nested code first, then the bundle itself (no --deep on the final signature).
-# Today the only nested code is the main executable; frameworks/helpers would be signed here too.
+# Sign the PhotoKit/Core Image/Vision helper before the responsible application bundle.
+sign --options runtime "$APP/Contents/MacOS/lightcraft-apple"
 sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP/Contents/MacOS/LightCraft"
 sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP"
 codesign --verify --strict --deep --verbose=2 "$APP"
@@ -157,6 +173,8 @@ echo "==> building $CLI_ZIP"
 CLI_DIR="$WORK/lightcraft-cli-$VERSION-macos-$ARCH"
 mkdir -p "$CLI_DIR"
 cp "$WORK/bin/lightcraft-cli" "$CLI_DIR/"
+cp "$WORK/bin/lightcraft-apple" "$CLI_DIR/"
+sign --options runtime "$CLI_DIR/lightcraft-apple"
 copy_docs "$CLI_DIR"
 sign --options runtime "$CLI_DIR/lightcraft-cli"
 codesign --verify --strict --verbose=2 "$CLI_DIR/lightcraft-cli"

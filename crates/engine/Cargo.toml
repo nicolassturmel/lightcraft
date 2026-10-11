@@ -42,6 +42,9 @@ lightcraft-segment = { workspace = true, optional = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 lightcraft-fetch = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+lightcraft-apple = { workspace = true }
+
 [features]
 # AI masks with SAM 3 (Object / Describe). Off for the web and CLI builds.
 sam = ["dep:lightcraft-segment"]

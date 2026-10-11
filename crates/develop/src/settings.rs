@@ -880,6 +880,14 @@ pub enum MaskShape {
     Subject,
     Sky,
     Background,
+    /// Apple Vision foreground coverage, stored in the catalog and renderable on every platform.
+    Vision {
+        #[serde(default)]
+        background: bool,
+        seg: crate::SegMask,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        edge: f64,
+    },
     /// One object picked by clicks (SAM 3 point prompts): `hint` holds the clicks that include,
     /// `exclude` the ones that exclude; `seg` the segmentation computed from them.
     Object {

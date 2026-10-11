@@ -101,6 +101,24 @@ pub fn probe_bytes(name: &str, bytes: &[u8]) -> Result<ProbeInfo, String> {
     let content_hash = Some(lightcraft_preview::hash_bytes(bytes).to_string());
     let m = lightcraft_meta::extract(bytes);
     let (meta, captured) = meta_of(&m);
+    #[cfg(target_os = "macos")]
+    if lightcraft_raw::probe(bytes) == Some(lightcraft_raw::RawFormat::Cr3)
+        && let Ok(native) = lightcraft_apple::probe_raw_bytes(bytes)
+    {
+        return Ok(ProbeInfo {
+            width: u32::try_from(native.width).map_err(|_| "Apple RAW width is too large")?,
+            height: u32::try_from(native.height).map_err(|_| "Apple RAW height is too large")?,
+            format: "CR3".into(),
+            kind: MediaKind::Raw,
+            file_size: bytes.len() as u64,
+            captured,
+            meta,
+            as_shot_wb: Some((native.temperature.round(), native.tint.round())),
+            content_hash,
+            xmp: lightcraft_meta::embedded(bytes).xmp,
+            ..Default::default()
+        });
+    }
     if lightcraft_raw::probe(bytes).is_some() {
         let raw = match lightcraft_raw::probe_info(bytes).map_err(|e| preview_reason(bytes, e)) {
             Ok(r) => r,
@@ -351,6 +369,24 @@ fn load_bytes_now(
     max_edge: usize,
     denoise: Option<&DenoiseSpec>,
 ) -> Result<(Rgb32f, Option<Rgb32f>, SourceInfo), String> {
+    #[cfg(target_os = "macos")]
+    if denoise.is_none() && lightcraft_raw::probe(&bytes) == Some(lightcraft_raw::RawFormat::Cr3) {
+        match lightcraft_apple::decode_raw_bytes(&bytes, max_edge) {
+            Ok(decoded) => {
+                let matrix = lightcraft_color::SRGB.to_space(&lightcraft_color::WORKING);
+                let pixels = decoded.pixels.into_iter().map(|[r, g, b, _]| matrix.apply_f32([r, g, b])).collect();
+                let image = Rgb32f { width: decoded.metadata.width, height: decoded.metadata.height, data: pixels };
+                let info = SourceInfo {
+                    raw: true,
+                    as_shot_temp: decoded.metadata.temperature.round(),
+                    as_shot_tint: decoded.metadata.tint.round(),
+                    ..Default::default()
+                };
+                return Ok((image, None, info));
+            }
+            Err(error) => log::debug!("Apple CR3 decoding unavailable; trying the Rust decoder: {error}"),
+        }
+    }
     if lightcraft_raw::probe(&bytes).is_some() {
         let mut raw = match lightcraft_raw::decode(&bytes).map_err(|e| preview_reason(&bytes, e)) {
             Ok(r) => r,

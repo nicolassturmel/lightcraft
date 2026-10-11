@@ -253,6 +253,20 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
                 smooth_plane(&mut out, e * 0.02 * frame_px(frame, w));
             }
         }
+        MaskShape::Vision { seg, background, edge } => {
+            // Damaged stored data selects nothing, including for a background component.
+            if seg.bounds().is_none() || seg.logits().is_none() {
+                return out;
+            }
+            let e = (*edge / 100.0).clamp(-1.0, 1.0) as f32;
+            sample_seg(Some(seg), &[], if e < 0.0 { 1.0 - 7.0 * e } else { 1.0 }, frame, w, h, &mut out);
+            if e > 0.0 {
+                smooth_plane(&mut out, e * 0.02 * frame_px(frame, w));
+            }
+            if *background {
+                out.data.iter_mut().for_each(|v| *v = 1.0 - *v);
+            }
+        }
         // not computed yet (no clicks, or a build without the model): nothing selected
         MaskShape::Object { hint, .. } if hint.is_empty() => {}
         MaskShape::Prompt { .. } => {}
@@ -607,6 +621,28 @@ mod tests {
     }
 
     #[test]
+    fn stored_vision_background_is_the_subject_complement() {
+        let seg = SegMask::from_logits(2, &[12.0, -12.0, 12.0, -12.0]);
+        let (w, h) = (80, 40);
+        let img = Rgb32f::new(w, h);
+        let l = Plane::new(w, h);
+        let subject = shape_alpha(&MaskShape::Vision { background: false, seg: seg.clone(), edge: 25.0 }, &frame(w, h), w, h, &img, &l, 0.0, None);
+        let background = shape_alpha(&MaskShape::Vision { background: true, seg, edge: 25.0 }, &frame(w, h), w, h, &img, &l, 0.0, None);
+        for (a, b) in subject.data.iter().zip(&background.data) {
+            assert!((a + b - 1.0).abs() < 1e-6);
+        }
+        assert!(subject.get(1, h / 2) > 0.99 && background.get(w - 2, h / 2) > 0.99);
+    }
+
+    #[test]
+    fn stored_vision_damage_never_selects_the_entire_background() {
+        let shape = MaskShape::Vision { background: true, seg: SegMask { side: 512, data: "damaged".into(), rect: None }, edge: 0.0 };
+        let (w, h) = (80, 40);
+        let alpha = shape_alpha(&shape, &frame(w, h), w, h, &Rgb32f::new(w, h), &Plane::new(w, h), 0.0, None);
+        assert!(alpha.data.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
     fn stored_segmentations_render_at_any_size_and_follow_the_crop() {
         // the left half selected, on a 16² logit grid
         let side = 16;
@@ -615,6 +651,7 @@ mod tests {
         for shape in [
             MaskShape::Object { hint: vec![Point::new(0.25, 0.5)], exclude: vec![], seg: Some(seg.clone()), detail: vec![], edge: 0.0 },
             MaskShape::Prompt { text: "left".into(), seg: Some(seg.clone()), detail: vec![], edge: 0.0 },
+            MaskShape::Vision { background: false, seg: seg.clone(), edge: 0.0 },
         ] {
             for (w, h) in [(40, 20), (400, 200)] {
                 let a = shape_alpha(&shape, &frame(w, h), w, h, &Rgb32f::new(w, h), &Plane::new(w, h), 0.0, None);

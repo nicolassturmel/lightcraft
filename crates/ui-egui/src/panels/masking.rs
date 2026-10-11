@@ -52,6 +52,8 @@ fn kind_label(s: &MaskShape) -> (&'static str, Icon) {
         MaskShape::Subject => ("Subject", Icon::Subject),
         MaskShape::Sky => ("Sky", Icon::Sky),
         MaskShape::Background => ("Background", Icon::Subject),
+        MaskShape::Vision { background: false, .. } => ("Subject", Icon::Subject),
+        MaskShape::Vision { background: true, .. } => ("Background", Icon::Subject),
         MaskShape::Object { .. } => ("Object", Icon::Subject),
         MaskShape::Prompt { .. } => ("Describe", Icon::Subject),
         MaskShape::People { .. } => ("People", Icon::Subject),
@@ -157,7 +159,9 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         });
         describe_field(app, ui, true);
         let seg = &app.session.segmenter;
-        let status = if seg.analyzing() {
+        let status = if app.tasks.is_running("Selecting with Apple Vision") {
+            Some("Selecting with Apple Vision…")
+        } else if seg.analyzing() {
             Some("Analyzing the photo for AI masks…")
         } else if seg.busy() {
             Some("Selecting…")
@@ -570,7 +574,7 @@ fn range_controls(app: &mut LightcraftApp, ui: &mut egui::Ui, comp: usize, shape
                 }
             }
         }
-        MaskShape::Object { edge, .. } | MaskShape::Prompt { edge, .. } => {
+        MaskShape::Object { edge, .. } | MaskShape::Prompt { edge, .. } | MaskShape::Vision { edge, .. } => {
             // Edge: how crisp the selection's border is (−100 hard … 0 as computed … 100 soft)
             let spec = ControlSpec {
                 id: "edge",
@@ -587,7 +591,7 @@ fn range_controls(app: &mut LightcraftApp, ui: &mut egui::Ui, comp: usize, shape
             let base = shape.clone();
             apply_slider_out(app, &spec, out, |app, v| {
                 let mut s = base.clone();
-                if let MaskShape::Object { edge, .. } | MaskShape::Prompt { edge, .. } = &mut s {
+                if let MaskShape::Object { edge, .. } | MaskShape::Prompt { edge, .. } | MaskShape::Vision { edge, .. } = &mut s {
                     *edge = v.clamp(-100.0, 100.0);
                 }
                 app.run("mask.update", json!({"component": comp, "shape": s}))

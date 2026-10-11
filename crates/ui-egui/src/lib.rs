@@ -7,6 +7,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod album_picker;
+pub mod apple_photos;
 pub mod control;
 pub mod credits;
 pub mod date_picker;
@@ -306,6 +307,7 @@ pub struct LightcraftApp {
     pub merge: merge::MergeState,
     /// An import in progress (the import review dialog's batches).
     pub import: Option<import::ImportTask>,
+    pub apple_photos: apple_photos::Browser,
     /// A folder scan in progress (feeds the import review).
     pub scan: Option<import::ScanTask>,
     /// A Synchronize Folder scan in progress (feeds its dialog).
@@ -392,6 +394,7 @@ impl LightcraftApp {
             region_tiles: Default::default(),
             merge: merge::MergeState::default(),
             import: None,
+            apple_photos: Default::default(),
             scan: None,
             sync: None,
             sync_owns_changes: false,
@@ -430,6 +433,9 @@ impl LightcraftApp {
 
     /// Run a UI or engine command by id. The single entry point for every frontend path.
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        if let Some(result) = apple_photos::intercept(self, id, &params) {
+            return result;
+        }
         if let Some(result) = model_setup::intercept(self, id, &params) {
             return result;
         }
@@ -1065,6 +1071,7 @@ impl LightcraftApp {
             panels::notices::show(self, &ctx);
             panels::dialogs::show(self, &ctx);
             panels::library_problem::show(self, &ctx);
+            apple_photos::show(self, &ctx);
             panels::toast(self, &ctx);
             self.widgets = widgets::take_registry(&ctx);
             self.end_frame(&ctx, t0);
@@ -1080,6 +1087,7 @@ impl LightcraftApp {
         panels::notices::show(self, &ctx);
         panels::dialogs::show(self, &ctx);
         panels::library_problem::show(self, &ctx);
+        apple_photos::show(self, &ctx);
         export_task::poll(self, &ctx);
         panels::activity::show(self, &ctx);
         pick::poll(self, &ctx);

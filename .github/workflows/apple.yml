@@ -1,0 +1,39 @@
+name: Apple services
+
+on:
+  push:
+    branches: [main]
+    paths: ["crates/apple/**", "crates/engine/**", "crates/develop/**", "crates/pipeline/**", "crates/ui-egui/**", "packaging/macos/**", "Cargo*", ".github/workflows/apple.yml"]
+  pull_request:
+    paths: ["crates/apple/**", "crates/engine/**", "crates/develop/**", "crates/pipeline/**", "crates/ui-egui/**", "packaging/macos/**", "Cargo*", ".github/workflows/apple.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_BUILD_JOBS: 4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - name: Compile and check the bridge (does not request Photos access)
+        run: |
+          cargo test --locked -p lightcraft-apple
+          cargo clippy --locked -p lightcraft-apple -p lightcraft-engine -p lightcraft-ui-egui --all-targets -- -D warnings
+      - name: Download the pinned CC0 Canon R8 C-RAW fixture
+        run: |
+          mkdir -p corpus/raw
+          curl --fail --silent --show-error --location --max-time 120 \
+            'https://raw.pixls.us/getfile.php/6587/nice/Canon%20-%20EOS%20R8%20-%203:2.CR3' \
+            -o corpus/raw/cr3-canon-r8-craw.cr3
+          printf '%s\n' 'df33cf394573645ce03dea1b2e9f0b5cc2b7734e9e3391ee7114151414cf2812  corpus/raw/cr3-canon-r8-craw.cr3' | shasum -a 256 -c -
+      - name: RAW integration, stored mask geometry and serialization
+        run: |
+          cargo test --locked -p lightcraft-engine --lib apple::tests
+          cargo test --locked -p lightcraft-pipeline stored_vision
+          cargo test --locked -p lightcraft-pipeline stored_segmentations_render

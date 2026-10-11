@@ -114,6 +114,8 @@ pub fn inspect(app: &LightcraftApp, ctx: &egui::Context) -> Value {
         "export": {"running": app.export.as_ref().map(crate::export_task::ExportTask::status), "last": app.last_export_result},
         "import": app.import.as_ref().map(crate::import::ImportTask::status),
         "tasks": app.tasks.labels(),
+        "applePhotos": {"open":app.apple_photos.open, "page":app.apple_photos.page,
+            "selected":app.apple_photos.selected.len(), "error":app.apple_photos.error},
         // every long-running task in flight, as the activity stack shows them (`activity.list`)
         "activity": app.session.activity.list(),
         // commands waiting on a native file dialog shown off the UI thread (`pick`)

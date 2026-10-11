@@ -15,6 +15,7 @@
 extern crate lightcraft_denoise_core as lightcraft_denoise;
 
 pub mod activity;
+pub mod apple;
 pub mod availability;
 pub(crate) mod camera_preview;
 pub mod camera_profiles;

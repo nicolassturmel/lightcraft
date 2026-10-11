@@ -23,6 +23,10 @@ fn shape_from(kind: &str, p: &Value, c: &str) -> Result<MaskShape> {
             invert: bool_or(p, "invert", false),
         },
         "sky" => MaskShape::Sky,
+        "subject" | "background" if p.get("seg").is_some() => {
+            let seg = seg_param(p).filter(|s| s.logits().is_some()).ok_or_else(|| bad(c, "invalid stored Vision mask"))?;
+            MaskShape::Vision { background: kind == "background", seg, edge: f64_or(p, "edge", 0.0) }
+        }
         "subject" => MaskShape::Subject,
         "background" => MaskShape::Background,
         "luminanceRange" => MaskShape::LuminanceRange {
@@ -163,6 +167,7 @@ pub fn specs() -> Vec<CommandSpec> {
             |s, p| {
                 let kind = str_param(p, "kind").unwrap_or("radial").to_string();
                 let mut shape = shape_from(&kind, p, "mask.add")?;
+                crate::apple::resolve_vision(s, p, &mut shape).map_err(ai_err)?;
                 let later = resolve_ai(s, &mut shape, "mask.add")?;
                 let name = str_param(p, "name").map(str::to_string);
                 if let Later::Text(text) = &later {
@@ -202,6 +207,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     return Err(bad("mask.addComponent", format!("no mask {mid}")));
                 }
                 let mut shape = shape_from(&kind, p, "mask.addComponent")?;
+                crate::apple::resolve_vision(s, p, &mut shape).map_err(ai_err)?;
                 let later = resolve_ai(s, &mut shape, "mask.addComponent")?;
                 if let Later::Text(text) = &later {
                     let op = p.get("op").and_then(Value::as_str).unwrap_or("add");

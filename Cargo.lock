@@ -3084,6 +3084,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lightcraft-apple"
+version = "0.6.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "lightcraft-catalog"
 version = "0.6.0"
 dependencies = [
@@ -3202,6 +3212,7 @@ dependencies = [
  "ab_glyph",
  "harfrust",
  "libc",
+ "lightcraft-apple",
  "lightcraft-catalog",
  "lightcraft-codecs",
  "lightcraft-color",
