@@ -152,7 +152,13 @@ pub fn decode_raw_bytes(bytes: &[u8], max_edge: usize) -> Result<RawImage, Strin
 
 /// Vision coverage over the uncropped, oriented, linear Rec.2020 image, stretched to a square.
 pub fn foreground_mask(width: usize, height: usize, pixels: &[[f32; 3]], side: usize) -> Result<Vec<f32>, String> {
-    vision_mask(width, height, pixels, side, None)
+    vision_mask(width, height, pixels, side, None, false)
+}
+
+/// Foreground protection for sky selection: a landscape with no detected subject is valid.
+/// Unsupported systems and inference/protocol errors still propagate to the caller.
+pub fn foreground_mask_or_empty(width: usize, height: usize, pixels: &[[f32; 3]], side: usize) -> Result<Vec<f32>, String> {
+    vision_mask(width, height, pixels, side, None, true)
 }
 
 /// Pick foreground instances at normalized, top-left-origin image points. Exclusions remove
@@ -169,22 +175,29 @@ pub fn foreground_instances(
     {
         return Err("invalid or oversized Apple Vision object clicks".into());
     }
-    vision_mask(width, height, pixels, side, Some((include, exclude)))
+    vision_mask(width, height, pixels, side, Some((include, exclude)), false)
 }
 
 type InstancePoints<'a> = Option<(&'a [[f64; 2]], &'a [[f64; 2]])>;
 
-fn vision_mask(width: usize, height: usize, pixels: &[[f32; 3]], side: usize, points: InstancePoints<'_>) -> Result<Vec<f32>, String> {
+fn vision_mask(
+    width: usize,
+    height: usize,
+    pixels: &[[f32; 3]],
+    side: usize,
+    points: InstancePoints<'_>,
+    allow_empty: bool,
+) -> Result<Vec<f32>, String> {
     checked_pixels(width, height, 10_000_000)?;
     checked_pixels(side, side, 1_048_576)?;
     if pixels.len() != width.saturating_mul(height) || pixels.iter().flatten().any(|v| !v.is_finite()) {
         return Err("invalid Vision input pixels".into());
     }
     #[cfg(target_os = "macos")]
-    return native::foreground_mask(width, height, pixels, side, points);
+    return native::foreground_mask(width, height, pixels, side, points, allow_empty);
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = points;
+        let _ = (points, allow_empty);
         Err("Apple Vision is available only on macOS".into())
     }
 }
@@ -342,6 +355,7 @@ mod native {
         pixels: &[[f32; 3]],
         side: usize,
         points: super::InstancePoints<'_>,
+        allow_empty: bool,
     ) -> Result<Vec<f32>, String> {
         let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
         let path = dir.path().join("rec2020.f32");
@@ -353,7 +367,8 @@ mod native {
             }
         }
         file.flush().map_err(|e| e.to_string())?;
-        let mut request = json!({"operation":"vision-mask", "path":path, "output":output, "width":width, "height":height, "side":side});
+        let mut request =
+            json!({"operation":"vision-mask", "path":path, "output":output, "width":width, "height":height, "side":side, "allowEmpty":allow_empty});
         if let Some((include, exclude)) = points {
             request["points"] = json!(include);
             request["exclude"] = json!(exclude);

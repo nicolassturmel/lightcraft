@@ -709,7 +709,7 @@ pub fn uses_vision(session: &Session) -> bool {
 /// Whether creation needs asynchronous Vision work. An empty Object selection waits for clicks.
 pub fn wants_vision(session: &Session, params: &Value) -> bool {
     cfg!(target_os = "macos")
-        && (matches!(params.get("kind").and_then(Value::as_str), Some("subject" | "background"))
+        && (matches!(params.get("kind").and_then(Value::as_str), Some("subject" | "background" | "sky"))
             || (params.get("kind").and_then(Value::as_str) == Some("object")
                 && params.get("points").and_then(Value::as_array).is_some_and(|points| !points.is_empty())))
         && params.get("seg").is_none()
@@ -725,6 +725,33 @@ pub fn vision_source(session: &mut Session) -> Result<SourceRef, String> {
 
 pub fn vision_selection(source: SourceRef) -> Result<SegMask, String> {
     vision_mask(source, None)
+}
+
+pub fn vision_sky_selection(source: SourceRef) -> Result<SegMask, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let decoded = source.load_source()?;
+        // Prefer a source's genuine semantic sky matte (e.g. ProRAW) when it carries one.
+        if let Some(mattes) = decoded.info.as_ref().and_then(|i| i.mattes.as_deref())
+            && mattes.has_sky()
+        {
+            let image = lightcraft_raster::resample::fit(&decoded.image, 512, 512, lightcraft_raster::resample::Filter::Box);
+            let frame = lightcraft_pipeline::geometry::Frame::new(image.width, image.height, &DevelopSettings::default(), true);
+            let log_l = image.map(lightcraft_pipeline::local::log_lum);
+            let mask = lightcraft_pipeline::masks::shape_alpha(&MaskShape::Sky, &frame, image.width, image.height, &image, &log_l, 0.0, Some(mattes));
+            let mask = lightcraft_raster::resample::resize(&mask, 512, 512, lightcraft_raster::resample::Filter::Bilinear);
+            return coverage_to_seg(512, &mask.data);
+        }
+        let image = lightcraft_raster::resample::fit(&decoded.image, 2048, 2048, lightcraft_raster::resample::Filter::Box);
+        let foreground = lightcraft_apple::foreground_mask_or_empty(image.width, image.height, &image.data, 512)?;
+        let mask = crate::sky::selection(&image, &lightcraft_raster::Plane { width: 512, height: 512, data: foreground })?;
+        coverage_to_seg(512, &mask.data)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = source;
+        Err("Apple Vision is available only on macOS".into())
+    }
 }
 
 pub fn vision_object_selection(source: SourceRef, include: &[Point], exclude: &[Point]) -> Result<SegMask, String> {
@@ -773,6 +800,8 @@ pub fn resolve_vision(session: &mut Session, params: &Value, shape: &mut MaskSha
         let source = vision_source(session)?;
         if let MaskShape::Object { hint, exclude, seg, .. } = shape {
             *seg = Some(vision_object_selection(source, hint, exclude)?);
+        } else if params.get("kind").and_then(Value::as_str) == Some("sky") {
+            *shape = MaskShape::SkySelection { seg: vision_sky_selection(source)?, edge: 0.0 };
         } else {
             let seg = vision_selection(source)?;
             *shape = MaskShape::Vision { background: params.get("kind").and_then(Value::as_str) == Some("background"), seg, edge: 0.0 };
@@ -1097,7 +1126,7 @@ mod tests {
         s.segmenter.background = true;
         s.segmenter.dir = Some(PathBuf::from("/nonexistent/lightcraft-apple-no-sam"));
         assert!(uses_vision(&s));
-        for kind in ["subject", "background"] {
+        for kind in ["subject", "background", "sky"] {
             assert!(wants_vision(&s, &json!({"kind":kind})));
         }
         assert!(!wants_vision(&s, &json!({"kind":"object"})), "empty Object waits for clicks without loading a model");
@@ -1120,7 +1149,10 @@ mod tests {
         assert_eq!(s.develop_of(s.active().unwrap()).unwrap(), before);
         // Existing stored semantic masks remain renderable without recomputation or a model.
         let seg = coverage_to_seg(2, &[1.0, 0.0, 1.0, 0.0]).unwrap();
-        s.execute("mask.add", &json!({"kind":"prompt", "text":"saved car", "seg":seg})).unwrap();
+        s.execute("mask.add", &json!({"kind":"prompt", "text":"saved car", "seg":seg.clone()})).unwrap();
+        s.execute("mask.add", &json!({"kind":"sky", "seg":seg})).unwrap();
+        assert!(matches!(s.develop_of(s.active().unwrap()).unwrap().masks.last().unwrap().components[0].shape, MaskShape::SkySelection { .. }));
+        assert!(!s.segmenter.busy() && !s.segmenter.loaded());
     }
 
     #[cfg(target_os = "macos")]
@@ -1175,6 +1207,53 @@ mod tests {
             assert!(job.accept(&mut s, selection()).unwrap_err().contains("discarded"), "change {change}");
             assert_eq!(s.catalog.revision, revision, "stale result must not write an adjustment");
         }
+    }
+
+    #[test]
+    fn preset_description_survives_photos_restart_and_reconstructs_from_the_source() {
+        let dir = std::env::temp_dir().join(format!(
+            "lightcraft-preset-description-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let mut s = Session::new().with_apple_photos(Some(dir.clone()));
+        s.apply_photos_snapshot(projected(&["a"], Some(&dir))).unwrap();
+        let id = s.apple_library.as_ref().unwrap().asset_ids["a"];
+        s.selection = Selection::single(id);
+        let source = s.catalog.photo(id).unwrap().source.clone();
+        s.execute("develop.set", &json!({"control":"light.exposure", "value":0.4})).unwrap();
+        let base = s.develop_of(id).unwrap();
+        s.execute("preset.apply", &json!({"id":"lc.bw-high-contrast"})).unwrap();
+        s.persist().unwrap();
+        let path = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+        let description: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(description["draft"]["develop"]["preset_selection"]["id"], "lc.bw-high-contrast");
+        assert!(!description.to_string().contains("pixels"));
+        let mut resumed = Session::new().with_apple_photos(Some(dir.clone()));
+        resumed.apply_photos_snapshot(projected(&["a"], Some(&dir))).unwrap();
+        resumed.selection = Selection::single(id);
+        resumed.execute("preset.apply", &json!({"id":"lc.warm-glow"})).unwrap();
+        let preset = resumed.presets.iter().find(|p| p.id == "lc.warm-glow").unwrap();
+        assert_eq!(*resumed.develop_of(id).unwrap(), preset.select(&base, 1.0));
+        assert_eq!(resumed.catalog.photo(id).unwrap().source, source);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "only one JSON description, no rewritten photo");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_sky_selection_runs_without_a_model_or_a_foreground_subject() {
+        let (w, h) = (320, 200);
+        let image = lightcraft_raster::Rgb32f {
+            width: w,
+            height: h,
+            data: (0..w * h).map(|i| if i / w < 120 { [0.34, 0.48, 0.63] } else { [0.12, 0.20, 0.28] }).collect(),
+        };
+        let source = SourceRef::Loaded(Box::new(DecodedSource::new(Arc::new(image), None)));
+        let seg = vision_sky_selection(source).unwrap();
+        let values = seg.logits().unwrap();
+        assert!(values[100 * 512 + 100] > 5.0, "sky selected");
+        assert!(values[400 * 512 + 100] < -5.0, "water excluded");
     }
 
     #[cfg(target_os = "macos")]

@@ -46,8 +46,10 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
         });
         divider(ui);
         // amount slider (applies to the last applied preset)
-        let amt_id = egui::Id::new("preset-amount");
-        let last: Option<(String, f64)> = ui.data(|d| d.get_temp(amt_id));
+        let active = app.session.active();
+        let current = active.and_then(|id| app.session.develop_of(id)).map(|d| (*d).clone());
+        let preview_base = active.and_then(|id| app.session.preset_settings_of(id));
+        let last = current.as_ref().and_then(|d| d.preset_selection.as_ref()).map(|p| (p.id.clone(), p.amount));
         if let Some((pid, amount)) = last.clone() {
             let spec = ControlSpec {
                 id: "presetAmount",
@@ -62,15 +64,10 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
             };
             let out = slider(ui, &spec, amount, true, None);
             if let Some(v) = out.value {
-                // re-apply from the pre-preset state: undo last preset step then apply with the new amount
-                let _ = app.run("edit.undo", json!({}));
                 let _ = app.run("preset.apply", json!({"id": pid, "amount": v}));
-                ui.data_mut(|d| d.insert_temp(amt_id, (pid, v)));
             }
             divider(ui);
         }
-        let active = app.session.active();
-        let current = active.and_then(|id| app.session.develop_of(id)).map(|d| (*d).clone());
         let thumbs = app.ui.preset_thumbs && active.is_some();
         let row_h = if thumbs { 54.0 } else { 26.0 };
         let scroll = egui::ScrollArea::vertical().id_salt("presets-scroll").auto_shrink([false, false]).show(ui, |ui| {
@@ -121,7 +118,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
                     } else if resp.hovered() {
                         ui.painter().rect_filled(r, 0.0, t.hover.gamma_multiply(0.7));
                     }
-                    let look = if thumbs || resp.hovered() { current.as_ref().map(|d| pr.apply(d, 1.0)) } else { None };
+                    let look = if thumbs || resp.hovered() { preview_base.as_ref().map(|d| pr.select(d, 1.0)) } else { None };
                     let mut text_x = r.left() + 40.0;
                     if thumbs && let (Some(id), Some(s)) = (active, look.as_ref()) {
                         let tr = Rect::from_min_size(pos2(r.left() + 36.0, r.top() + 5.0), vec2(66.0, row_h - 10.0));
@@ -149,7 +146,6 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
                     }
                     if resp.clicked() {
                         let _ = app.run("preset.apply", json!({"id": pid, "amount": 100}));
-                        ui.data_mut(|d| d.insert_temp(amt_id, (pid.clone(), 100.0)));
                         ui.data_mut(|d| d.remove::<(lightcraft_catalog::PhotoId, Preset, String)>(egui::Id::new("last-preset-hover")));
                         app.toast(ui.ctx(), crate::i18n::tr_format!("Preset: {name}", name = name));
                     }
@@ -208,12 +204,12 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
         let pointer_in_scroll = ui.ctx().input(|i| i.pointer.hover_pos()).is_some_and(|pos| scroll.inner_rect.contains(pos));
         if pointer_in_scroll {
             if app.hover_preview.is_none()
-                && let (Some(id), Some(curr)) = (active, current.as_ref())
+                && let (Some(id), Some(curr)) = (active, preview_base.as_ref())
                 && let Some((saved_id, saved_preset, saved_label)) =
                     ui.data(|d| d.get_temp::<(lightcraft_catalog::PhotoId, Preset, String)>(last_hover_id))
                 && saved_id == id
             {
-                app.hover_preview = Some(HoverPreview { label: saved_label, settings: saved_preset.apply(curr, 1.0) });
+                app.hover_preview = Some(HoverPreview { label: saved_label, settings: saved_preset.select(curr, 1.0) });
             }
         } else {
             ui.data_mut(|d| d.remove::<(lightcraft_catalog::PhotoId, Preset, String)>(last_hover_id));
@@ -231,5 +227,41 @@ pub fn cover_uv(r: Rect, size: [usize; 2]) -> Rect {
     } else {
         let f = a / ra;
         Rect::from_min_max(pos2(0.0, (1.0 - f) / 2.0), pos2(1.0, (1.0 + f) / 2.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Services, headless::Headless, state::ViewMode};
+    use std::time::Duration;
+
+    #[test]
+    fn preset_amount_keeps_manual_edits_and_the_selected_look_belongs_to_the_photo() {
+        let mut app = LightcraftApp::new(lightcraft_engine::Session::with_demo(), Services::default());
+        app.ui.settings.gpu = false;
+        app.ui.view = ViewMode::Detail;
+        app.ui.presets = true;
+        let mut h = Headless::new(app, [1400.0, 900.0], 1.0);
+        let ids = h.app.session.visible_cloned();
+        let id = h.app.session.active().unwrap();
+        h.app.run("preset.apply", json!({"id":"lc.warm-glow"})).unwrap();
+        let mut settings = (*h.app.session.develop_of(id).unwrap()).clone();
+        settings.crop.geometry.angle = 5.0;
+        h.app.session.set_develop(id, settings, "Manual crop").unwrap();
+        for _ in 0..4 {
+            h.step();
+        }
+        let r = h.request("ui.clickWidget", json!({"id":"slider:presetAmount", "fx":0.25}), Duration::from_secs(10));
+        assert_eq!(r["ok"], true, "{r}");
+        let d = h.app.session.develop_of(id).unwrap();
+        assert_eq!(d.preset_selection.as_ref().unwrap().amount, 50.0);
+        assert_eq!(d.crop.geometry.angle, 5.0, "Amount must not undo the unrelated last edit");
+        let other = ids.into_iter().find(|other| *other != id).unwrap();
+        h.app.run("library.select", json!({"ids":[other.0], "active":other.0})).unwrap();
+        for _ in 0..4 {
+            h.step();
+        }
+        assert!(!h.app.widgets.iter().any(|(id, _)| id == "slider:presetAmount"), "a different photo has no selected look");
     }
 }

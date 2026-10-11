@@ -137,6 +137,9 @@ pub struct DevelopSettings {
     pub calibration: Calibration,
     /// Section on/off toggles (the "eye" buttons on panel headers): section id → enabled.
     pub disabled_sections: Vec<String>,
+    /// Selected preset and its reversible parameter changes; part of the non-destructive recipe.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preset_selection: Option<crate::presets::PresetSelection>,
 }
 
 impl Default for DevelopSettings {
@@ -170,6 +173,7 @@ impl Default for DevelopSettings {
             enhance: Enhance::default(),
             calibration: Calibration::default(),
             disabled_sections: Vec::new(),
+            preset_selection: None,
         }
     }
 }
@@ -880,6 +884,13 @@ pub enum MaskShape {
     Subject,
     Sky,
     Background,
+    /// A sky selection computed from the original preview, with foreground protection from Vision.
+    /// Stored independently of exposure/colour edits so preview and export use the same boundary.
+    SkySelection {
+        seg: crate::SegMask,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        edge: f64,
+    },
     /// Apple Vision foreground coverage, stored in the catalog and renderable on every platform.
     Vision {
         #[serde(default)]

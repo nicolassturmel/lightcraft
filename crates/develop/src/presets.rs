@@ -13,6 +13,81 @@ use serde_json::{Map, Value};
 
 use crate::DevelopSettings;
 
+/// The selected look, kept in the edit recipe. Only values changed by the preset are recorded;
+/// pixels and a second complete copy of the settings are never stored here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PresetSelection {
+    pub id: String,
+    pub amount: f64,
+    pub before: Value,
+    pub applied: Value,
+}
+
+fn changed_values(before: &Value, after: &Value, depth: usize) -> (Value, Value) {
+    if depth < 32
+        && let (Some(b), Some(a)) = (before.as_object(), after.as_object())
+    {
+        let mut old = Map::new();
+        let mut new = Map::new();
+        for (key, value) in a {
+            let previous = b.get(key).unwrap_or(&Value::Null);
+            if value != previous {
+                let (left, right) = changed_values(previous, value, depth + 1);
+                old.insert(key.clone(), left);
+                new.insert(key.clone(), right);
+            }
+        }
+        (Value::Object(old), Value::Object(new))
+    } else {
+        (before.clone(), after.clone())
+    }
+}
+
+fn restore_values(current: &mut Value, before: &Value, applied: &Value, depth: usize) {
+    if depth < 32
+        && let (Some(c), Some(b), Some(a)) = (current.as_object_mut(), before.as_object(), applied.as_object())
+    {
+        for (key, value) in a {
+            if let (Some(now), Some(old)) = (c.get_mut(key), b.get(key)) {
+                if key == "masks" {
+                    restore_masks(now, old, value);
+                } else {
+                    restore_values(now, old, value, depth + 1);
+                }
+            }
+        }
+    } else if current == applied {
+        *current = before.clone();
+    }
+}
+
+fn restore_masks(current: &mut Value, before: &Value, applied: &Value) {
+    let (Some(c), Some(b), Some(a)) = (current.as_array_mut(), before.as_array(), applied.as_array()) else { return };
+    // Remove the previous preset's own masks, preserving added or manually edited components.
+    c.retain_mut(|mask| {
+        let id = mask.get("id");
+        if a.iter().any(|m| m.get("id") == id && m == mask) {
+            if let Some(old) = b.iter().find(|m| m.get("id") == id) {
+                *mask = old.clone();
+            } else {
+                return false;
+            }
+        }
+        true
+    });
+}
+
+impl DevelopSettings {
+    /// Remove the previous selected look, retaining subsequent manual changes.
+    pub fn preset_base(&self) -> Self {
+        let mut base = self.clone();
+        let Some(selection) = base.preset_selection.take() else { return base };
+        let mut value = base.to_json();
+        restore_values(&mut value, &selection.before, &selection.applied, 0);
+        Self::from_json(&value).unwrap_or(base)
+    }
+}
+
 /// Groups shown in "Choose settings to copy" / "Create preset" (Lightroom's checklist).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -211,6 +286,17 @@ pub struct Preset {
 }
 
 impl Preset {
+    /// Select a look instead of stacking it on the last one. The description survives save,
+    /// reload, undo and redo, and also provides the baseline for hover previews and Amount.
+    pub fn select(&self, settings: &DevelopSettings, amount: f64) -> DevelopSettings {
+        let base = settings.preset_base();
+        let mut out = self.apply(&base, amount);
+        out.preset_selection = None;
+        let (before, applied) = changed_values(&base.to_json(), &out.to_json(), 0);
+        out.preset_selection = Some(PresetSelection { id: self.id.clone(), amount: amount * 100.0, before, applied });
+        out
+    }
+
     pub fn from_settings(id: &str, name: &str, group: &str, s: &DevelopSettings, groups: &[SettingsGroup]) -> Preset {
         Preset { id: id.into(), name: name.into(), group: group.into(), settings: extract_groups(s, groups), favorite: false, builtin: false }
     }
@@ -244,6 +330,46 @@ impl Preset {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn look(id: &str, settings: Value) -> Preset {
+        Preset { id: id.into(), name: id.into(), group: "test".into(), settings, favorite: false, builtin: false }
+    }
+
+    #[test]
+    fn choosing_another_look_replaces_the_previous_one_after_serialization() {
+        let mut base = DevelopSettings::default();
+        base.light.exposure = 0.7;
+        base.crop.geometry.angle = 3.0;
+        let a = look("bw", json!({"treatment":"bw", "effects":{"dehaze":40.0}, "light":{"exposure":2.0}}));
+        let b = look("colour", json!({"color":{"saturation":12.0}}));
+        let first = a.select(&base, 1.0);
+        let restored = DevelopSettings::from_json(&first.to_json()).unwrap();
+        assert_eq!(b.select(&restored, 1.0), b.select(&base, 1.0));
+        assert_eq!(a.select(&first, 1.0), first, "reselecting is idempotent");
+        assert_eq!(a.select(&first, 0.5), a.select(&base, 0.5), "Amount uses the same baseline");
+        assert_eq!(a.select(&first, 0.0).preset_base(), base);
+        assert!(first.preset_selection.as_ref().unwrap().before.get("crop").is_none(), "the recipe stores only changed fields");
+    }
+
+    #[test]
+    fn switching_looks_preserves_manual_settings_and_masks() {
+        let mut base = DevelopSettings::default();
+        let own = crate::Mask { id: 1, name: "Own mask".into(), ..Default::default() };
+        base.masks.push(own.clone());
+        let preset_mask = crate::Mask { id: 8, name: "Preset mask".into(), ..Default::default() };
+        let a = look("a", json!({"effects":{"dehaze":40.0}, "masks":[preset_mask]}));
+        let b = look("b", json!({"color":{"saturation":12.0}}));
+        let mut current = a.select(&base, 1.0);
+        current.effects.dehaze = 17.0;
+        current.light.exposure = 1.2;
+        current.masks.push(crate::Mask { id: 3, name: "New manual mask".into(), ..Default::default() });
+        let result = b.select(&current, 1.0);
+        assert_eq!(result.effects.dehaze, 17.0);
+        assert_eq!(result.light.exposure, 1.2);
+        assert_eq!(result.masks.len(), 2);
+        assert_eq!(result.masks[0], own);
+        assert_eq!(result.masks[1].name, "New manual mask");
+    }
 
     #[test]
     fn extract_and_apply_roundtrip() {

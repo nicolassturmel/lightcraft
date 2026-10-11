@@ -16,6 +16,10 @@ rendered copies in Photos > LightCraft. It mitigates CR3 decoding and Subject/Ba
 segmentation with Apple system APIs. Native Object clicks need no SAM download; text-prompt
 masking is disabled because this Vision API does not support it. Library browsing uses local Photos previews; iCloud
 originals are retrieved only through each photo’s Download original button.
+Sky selection now combines Vision foreground protection with border connectivity and horizon
+refinement, and stores the result independently of presets/exposure. It remains a heuristic
+hybrid; complex-scene semantic sky parity is still open. Presets replace the previous selected
+look using a reversible parameter description in the per-photo JSON; Amount preserves manual edits.
 See [apple-integration.md](apple-integration.md). The portable gaps and scores below remain
 open; no broader camera-coverage claim is made from one Canon R8 test.
 
@@ -79,6 +83,7 @@ Beta-blocking gaps (B) total **~230–430 h**; with the stability and platform w
 ## Revision history
 
 - 2026-10-11: Apple-service fork mitigation recorded; native Object masks now use Vision without SAM; unsupported text selection disabled. Portable gaps retained.
+- 2026-10-11: Native sky refinement and reversible preset selection recorded; semantic sky gap retained.
 
 | Date | Change | Summary |
 |---|---|---|

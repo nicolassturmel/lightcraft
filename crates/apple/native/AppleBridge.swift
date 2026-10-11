@@ -41,6 +41,7 @@ struct Request: Decodable {
     var recipe: String?
     var points: [[Double]]?
     var exclude: [[Double]]?
+    var allowEmpty: Bool?
 }
 
 func required(_ value: String?, _ name: String) throws -> String {
@@ -447,23 +448,24 @@ func foregroundMask(_ request: Request) throws -> [String: Any] {
     let handler = VNImageRequestHandler(ciImage: image, orientation: .up)
     let requestMask = VNGenerateForegroundInstanceMaskRequest()
     try handler.perform([requestMask])
-    guard let observation = requestMask.results?.first, !observation.allInstances.isEmpty else {
-        throw BridgeError("Apple Vision found no foreground subject in this photo")
-    }
-    let selected = try selectedInstances(observation, request)
     var coverage = [Float](repeating: 0, count: side * side)
-    // Vision's empty IndexSet means all instances. Explicitly retain zero coverage when the
-    // user removed every object instead of accidentally selecting all of them again.
-    if !selected.isEmpty {
-        let buffer = try observation.generateScaledMaskForImage(forInstances: selected, from: handler)
-        let mask = CIImage(cvPixelBuffer: buffer)
-        let scaled = mask.transformed(by: CGAffineTransform(scaleX: CGFloat(side) / mask.extent.width, y: CGFloat(side) / mask.extent.height))
-        let context = CIContext(options: [.cacheIntermediates: false])
-        coverage.withUnsafeMutableBytes { bytes in
-            if let address = bytes.baseAddress {
-                context.render(scaled, toBitmap: address, rowBytes: side * 4, bounds: CGRect(x: 0, y: 0, width: side, height: side), format: .Rf, colorSpace: nil)
+    if let observation = requestMask.results?.first, !observation.allInstances.isEmpty {
+        let selected = try selectedInstances(observation, request)
+        // Vision's empty IndexSet means all instances. Explicitly retain zero coverage when the
+        // user removed every object instead of accidentally selecting all of them again.
+        if !selected.isEmpty {
+            let buffer = try observation.generateScaledMaskForImage(forInstances: selected, from: handler)
+            let mask = CIImage(cvPixelBuffer: buffer)
+            let scaled = mask.transformed(by: CGAffineTransform(scaleX: CGFloat(side) / mask.extent.width, y: CGFloat(side) / mask.extent.height))
+            let context = CIContext(options: [.cacheIntermediates: false])
+            coverage.withUnsafeMutableBytes { bytes in
+                if let address = bytes.baseAddress {
+                    context.render(scaled, toBitmap: address, rowBytes: side * 4, bounds: CGRect(x: 0, y: 0, width: side, height: side), format: .Rf, colorSpace: nil)
+                }
             }
         }
+    } else if request.allowEmpty != true || request.points != nil {
+        throw BridgeError("Apple Vision found no foreground subject in this photo")
     }
     try coverage.withUnsafeBytes { bytes in
         try Data(bytes).write(to: URL(fileURLWithPath: try required(request.output, "output")), options: .atomic)

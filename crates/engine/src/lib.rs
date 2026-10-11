@@ -56,6 +56,8 @@ pub mod presets;
 pub mod rename;
 pub mod segment;
 pub mod sidecar;
+#[cfg(any(test, target_os = "macos"))]
+mod sky;
 pub mod smart;
 pub mod sync;
 mod view;
@@ -151,6 +153,11 @@ pub struct Interaction {
 static VISIBLE_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 static LIBRARY_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+struct LegacyPresetBase {
+    photo: Arc<lightcraft_catalog::Photo>,
+    settings: Arc<DevelopSettings>,
+}
+
 pub struct Session {
     library_generation: u64,
     /// Auto Sync: edits to the active photo also change the other selected photos (the settings
@@ -204,6 +211,8 @@ pub struct Session {
     /// Groups last used for Copy (Lightroom remembers them).
     pub copy_groups: Vec<lightcraft_develop::SettingsGroup>,
     pub presets: Vec<lightcraft_develop::Preset>,
+    /// One legacy photo's recovered preset baseline; a changed Photo Arc invalidates it.
+    legacy_preset_base: std::sync::Mutex<Option<LegacyPresetBase>>,
     /// Favourite profile ids (persisted with the library, like preset favourites).
     pub profile_favorites: Vec<String>,
     /// Recently applied profile ids, newest first (at most [`presets::RECENT_PROFILES`]).
@@ -323,6 +332,7 @@ impl Session {
             previous_active: None,
             copy_groups: lightcraft_develop::SettingsGroup::default_copy(),
             presets: presets::builtin(),
+            legacy_preset_base: Default::default(),
             profile_favorites: Vec::new(),
             profile_recent: Vec::new(),
             journal: Vec::new(),
@@ -646,6 +656,41 @@ impl Session {
         self.catalog.photo(id).map(|p| p.develop.clone())
     }
 
+    /// Recover the baseline of presets saved by older builds, replaying subsequent manual changes.
+    /// New recipes carry
+    /// their reversible preset description directly; no personal edit/history is rewritten here.
+    pub fn preset_settings_of(&self, id: PhotoId) -> Option<Arc<DevelopSettings>> {
+        let photo = self.catalog.photo(id)?;
+        if photo.develop.preset_selection.is_some() || !photo.history.last().is_some_and(|h| h.settings == photo.develop) {
+            return Some(photo.develop.clone());
+        }
+        if let Some(cached) = self.legacy_preset_base.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref()
+            && Arc::ptr_eq(&cached.photo, photo)
+        {
+            return Some(cached.settings.clone());
+        }
+        let recovered = (|| {
+            let first = photo.history.iter().position(|h| h.label.starts_with("Preset: "))?;
+            let mut baseline = photo.history.get(first.checked_sub(1)?)?.settings.as_ref().clone();
+            let mut previous = baseline.clone();
+            for step in photo.history.iter().skip(first) {
+                if !step.label.starts_with("Preset: ") {
+                    if step.label.starts_with("History:") || step.label.starts_with("Reset") || step.label.starts_with("Restore ") {
+                        baseline = step.settings.as_ref().clone();
+                    } else if let Some(delta) = json_delta(&previous.to_json(), &step.settings.to_json()) {
+                        baseline = baseline.merged(&delta).ok()?;
+                    }
+                }
+                previous = step.settings.as_ref().clone();
+            }
+            Some(Arc::new(baseline))
+        })()
+        .unwrap_or_else(|| photo.develop.clone());
+        *self.legacy_preset_base.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(LegacyPresetBase { photo: photo.clone(), settings: recovered.clone() });
+        Some(recovered)
+    }
+
     /// Change a photo's develop settings. During an interaction the change is previewed without an
     /// undo step; otherwise it is committed with a history entry.
     pub fn set_develop(&mut self, id: PhotoId, settings: DevelopSettings, label: &str) -> Result<()> {
@@ -911,6 +956,8 @@ mod tests_organize;
 mod tests_persist;
 #[cfg(test)]
 mod tests_prefs;
+#[cfg(test)]
+mod tests_presets;
 #[cfg(test)]
 mod tests_process;
 #[cfg(test)]

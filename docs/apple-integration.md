@@ -24,6 +24,7 @@ binary directly from a terminal or automation host can attribute consent to that
 | System Photo Library and edited copies | PhotoKit | 11 |
 | Photos image decoding and CR3 | Core Image / `CIRAWFilter` | 12 |
 | Subject/background/object masks | `VNGenerateForegroundInstanceMaskRequest`, `VNInstanceMaskObservation` | 14 |
+| Foreground-protected sky masks | Vision foreground instances + source-colour/horizon refinement | 14 |
 
 Normal macOS launches use Photos automatically, including when old UI preferences contain a
 file-library path. `--library DIR` or an explicit `LIGHTCRAFT_LIBRARY` environment variable opens
@@ -86,6 +87,16 @@ It contains no photo catalogue, original bytes or album membership. Read errors 
 damaged metadata is preserved. Failed saves keep changes queued and report an unsaved state.
 Native Photos source images, favourites, dates and metadata remain unchanged.
 
+Selecting a preset **replaces the previously selected look**. Its `preset_selection` description
+records the preset ID, amount, and only the parameter values before/after its application.
+Switching presets, hover previews and the Amount slider all use the recovered baseline;
+subsequent manual changes and personal masks are retained. Amount never invokes Undo on an
+unrelated edit. The description survives JSON save/reopen and undo/redo. Older consecutive preset
+histories recover their recorded baseline and replay intervening manual changes when available.
+The lookup is cached against the photo revision and does not rewrite old history. Preset parameters and masks
+remain recipe data: preview and export render from the original decoded pixels, never from a
+previously rendered preset image. Edited copies in Photos remain explicit save operations.
+
 Use **Save edited copy to Photos**, **File → Save Edited Copy to Photos**, or **⌘S** to render a
 full-size JPEG at quality 95 into a new asset in the Photos album **LightCraft**. The source’s
 capture date and location are carried onto the copy. Every save creates a new copy. The new
@@ -118,6 +129,16 @@ foreground object to include its instance, or Option-click to exclude an entire 
 Multiple clicks can include several objects. Excluding the last selected object produces an
 empty mask. A click on undetected background reports an error and preserves the previous mask.
 Vision can group related objects into one instance; use Brush for finer manual corrections.
+
+**Sky** uses a source's embedded semantic sky matte when present. Otherwise it combines Vision's
+foreground protection with sky-colour connectivity from the upper image borders and continuous
+horizon detection, including tilted horizons. It retains neutral clouds and protects detected
+subjects; disconnected blue objects and water below a detected horizon are excluded. The selection
+is computed from the oriented original preview, independently of exposure, B&W, presets or crop,
+then stored as `skySelection` logits with the same Edge control as other native masks. A landscape
+without a Vision foreground subject is valid. This is a hybrid refinement, **not a dedicated
+semantic sky model**: ambiguous indoor scenes, weak horizons and complex landscapes can still
+need Add/Subtract Brush corrections. No SAM download is used.
 
 The result is stored as portable quantized logits in the adjustment metadata. Crop, scaling
 and edge refinement use that stored selection; rendering and export never require a model.
@@ -160,6 +181,9 @@ Mask regressions verify that Object/Add/Subtract/Intersect never open a SAM dial
 stays disabled, and stale object results cannot write adjustments. The CC0 R8 fixture also checks
 real Vision inference, click/mask orientation, exclusion of the sole selected instance, and
 rejection of a background click without touching the personal Photos library.
+Sky tests cover clouds, tilted horizons, blue water, foreground protection, no-sky inputs,
+exposure variation and native inference without a foreground subject. Preset tests cover switching,
+Amount, per-photo baselines, manual corrections, mask ownership, undo/redo and JSON recovery.
 Real PhotoKit writes require an authorized
 macOS session and are not performed against a personal library by the automated tests.
 

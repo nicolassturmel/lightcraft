@@ -51,6 +51,10 @@ impl Mattes {
         self.mattes.is_empty()
     }
 
+    pub fn has_sky(&self) -> bool {
+        self.mattes.iter().any(|(kind, _)| *kind == MatteKind::Sky)
+    }
+
     /// Memory held (bytes).
     pub fn bytes(&self) -> usize {
         self.mattes.iter().map(|(_, m)| m.data.len()).sum()
@@ -253,7 +257,7 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
                 smooth_plane(&mut out, e * 0.02 * frame_px(frame, w));
             }
         }
-        MaskShape::Vision { seg, background, edge } => {
+        MaskShape::Vision { seg, edge, .. } | MaskShape::SkySelection { seg, edge } => {
             // Damaged stored data selects nothing, including for a background component.
             if seg.bounds().is_none() || seg.logits().is_none() {
                 return out;
@@ -263,7 +267,7 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
             if e > 0.0 {
                 smooth_plane(&mut out, e * 0.02 * frame_px(frame, w));
             }
-            if *background {
+            if matches!(shape, MaskShape::Vision { background: true, .. }) {
                 out.data.iter_mut().for_each(|v| *v = 1.0 - *v);
             }
         }
@@ -652,6 +656,7 @@ mod tests {
             MaskShape::Object { hint: vec![Point::new(0.25, 0.5)], exclude: vec![], seg: Some(seg.clone()), detail: vec![], edge: 0.0 },
             MaskShape::Prompt { text: "left".into(), seg: Some(seg.clone()), detail: vec![], edge: 0.0 },
             MaskShape::Vision { background: false, seg: seg.clone(), edge: 0.0 },
+            MaskShape::SkySelection { seg: seg.clone(), edge: 0.0 },
         ] {
             for (w, h) in [(40, 20), (400, 200)] {
                 let a = shape_alpha(&shape, &frame(w, h), w, h, &Rgb32f::new(w, h), &Plane::new(w, h), 0.0, None);

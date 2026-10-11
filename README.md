@@ -11,9 +11,11 @@
 <h1 align="center">LightCraft</h1>
 
 This fork uses **Apple Photos as its main macOS library**, with **Apple Core Image CR3 decoding**
-and **Apple Vision Subject/Background masks**. Originals stay unchanged. Edits save as adjustment
+and **Apple Vision Subject/Background/Object masks**, with foreground-protected sky refinement. Originals stay unchanged. Edits save as adjustment
 metadata; **⌘S** creates an edited copy with its recipe in a Photos album named **LightCraft**.
 See [Apple integration](docs/apple-integration.md) for permissions, build instructions and usage.
+Selecting another preset replaces the previous look; its reversible parameter description is
+saved alongside the edits. Preview and export always render from the original pixels.
 
 <h3 align="center">Your photos. Your pixels. Your machine.</h3>
 

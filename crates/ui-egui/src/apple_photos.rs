@@ -324,6 +324,7 @@ fn start_mask(app: &mut LightcraftApp, command: &str, params: &Value) -> Result<
     let command = command.to_string();
     let mut params = params.clone();
     let object = params.get("kind").and_then(Value::as_str) == Some("object");
+    let sky = params.get("kind").and_then(Value::as_str) == Some("sky");
     let points = |key| -> Result<Vec<lightcraft_geom::Point>, String> {
         let Some(array) = params.get(key) else { return Ok(vec![]) };
         let array = array
@@ -355,6 +356,8 @@ fn start_mask(app: &mut LightcraftApp, command: &str, params: &Value) -> Result<
         move || {
             if object {
                 lightcraft_engine::apple::vision_object_selection(source, &include, &exclude)
+            } else if sky {
+                lightcraft_engine::apple::vision_sky_selection(source)
             } else {
                 lightcraft_engine::apple::vision_selection(source)
             }

@@ -63,6 +63,7 @@ impl DevelopSettings {
         let d = DevelopSettings::default();
         a.wb = d.wb;
         a.process = d.process;
+        a.preset_selection = None;
         a == d
     }
 

@@ -931,8 +931,8 @@ pub fn specs() -> Vec<CommandSpec> {
             let ids = s.targets(p);
             let ops = ids
                 .iter()
-                .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
-                .filter_map(|(id, d)| s.develop_op(id, preset.apply(&d, amount), &format!("Preset: {}", preset.name)))
+                .filter_map(|id| s.preset_settings_of(*id).map(|d| (*id, d)))
+                .filter_map(|(id, d)| s.develop_op(id, preset.select(&d, amount), &format!("Preset: {}", preset.name)))
                 .collect::<Vec<_>>();
             s.commit(&format!("Preset: {}", preset.name), Op::Batch { ops })?;
             ok()

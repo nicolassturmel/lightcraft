@@ -22,6 +22,10 @@ fn shape_from(kind: &str, p: &Value, c: &str) -> Result<MaskShape> {
             feather: f64_or(p, "feather", 50.0),
             invert: bool_or(p, "invert", false),
         },
+        "sky" if p.get("seg").is_some() => {
+            let seg = seg_param(p).filter(|s| s.logits().is_some()).ok_or_else(|| bad(c, "invalid stored sky mask"))?;
+            MaskShape::SkySelection { seg, edge: f64_or(p, "edge", 0.0) }
+        }
         "sky" => MaskShape::Sky,
         "subject" | "background" if p.get("seg").is_some() => {
             let seg = seg_param(p).filter(|s| s.logits().is_some()).ok_or_else(|| bad(c, "invalid stored Vision mask"))?;
@@ -164,7 +168,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create New Mask",
             [],
             None,
-            "{kind: brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt, ...shape params (start/end, center/rx/ry/angle/feather, lo/hi…; object: points/exclude [[x,y],…]; prompt: text; object/prompt: seg? a stored segmentation, no model needed), name?} — real macOS photos use Apple Vision for Object/Subject/Background; text selection is unsupported there. Portable Object/Describe uses SAM 3; in the app a prompt returns {pending}",
+            "{kind: brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt, ...shape params (start/end, center/rx/ry/angle/feather, lo/hi…; object: points/exclude [[x,y],…]; prompt: text; object/prompt/sky: seg? a stored segmentation, no model needed), name?} — real macOS photos use Apple Vision for Object/Subject/Background and foreground-protected Sky; text selection is unsupported there. Portable Object/Describe uses SAM 3; in the app a prompt returns {pending}",
             has_active,
             |s, p| {
                 let kind = str_param(p, "kind").unwrap_or("radial").to_string();
