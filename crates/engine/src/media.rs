@@ -324,8 +324,6 @@ pub struct MediaCache {
     /// share of [`crate::memory::budget`]); the least recently used entry of any of them goes first.
     budget: usize,
     pub file_loader: Option<FileLoader>,
-    /// User preference: permit on-demand PhotoKit iCloud downloads.
-    pub photos_network: bool,
     pub file_probe: Option<FileProbe>,
     pub preview_loader: Option<PreviewLoader>,
     /// Reads a photo file's bytes (Photo Merge); `None` = the local file system.
@@ -399,7 +397,6 @@ impl Default for MediaCache {
             preview_capacity: 0,
             budget,
             file_loader: None,
-            photos_network: false,
             file_probe: None,
             preview_loader: None,
             file_bytes: None,
@@ -528,7 +525,7 @@ impl MediaCache {
         self.insert_source(id, level, DecodedSource::new(img, None));
     }
 
-    fn insert_source(&mut self, id: PhotoId, level: SourceLevel, img: DecodedSource) {
+    pub(crate) fn insert_source(&mut self, id: PhotoId, level: SourceLevel, img: DecodedSource) {
         let tick = lightcraft_preview::next_tick();
         match level {
             SourceLevel::Thumb => {
@@ -651,7 +648,9 @@ impl MediaCache {
                     None => SourceRef::File { path: format!("demo:{scene}"), max_edge, loader: None, fallback: None, denoise: None },
                 }
             }
-            Source::ApplePhotos { asset, .. } => SourceRef::ApplePhotos { asset: asset.clone(), max_edge, network: self.photos_network },
+            // Browsing, editing and exports never initiate an iCloud download. Only the explicit
+            // per-photo download command creates a source with network access.
+            Source::ApplePhotos { asset, .. } => SourceRef::ApplePhotos { asset: asset.clone(), max_edge, network: false },
             Source::File { path } => {
                 SourceRef::File { path: path.clone(), max_edge, loader: self.file_loader.clone(), fallback: None, denoise: None }
             }
@@ -878,6 +877,8 @@ pub enum QuickSource {
     Cached,
     /// The camera's embedded JPEG (unedited raws).
     Embedded,
+    /// Photos' rendered, locally cached thumbnail; never a source for development or export.
+    PhotosPreview,
     /// A thumbnail-level develop render made for the occasion.
     Small,
 }
@@ -893,6 +894,8 @@ pub struct QuickJob {
     pub cached: Vec<(Arc<PreviewCache>, Hash128)>,
     /// Embedded preview of an unedited raw: (path, loader, max edge).
     pub embedded: Option<(String, PreviewLoader, usize)>,
+    /// Apple Photos' cached library preview (asset, max edge). Always offline.
+    pub photos_preview: Option<(String, usize)>,
     /// Last resort: run this thumbnail job.
     pub small: Option<Box<RenderJob>>,
 }
@@ -925,6 +928,9 @@ impl QuickJob {
             && let Some(image) = loader(path, *edge)
         {
             return done(rendered(image), Some(QuickSource::Embedded));
+        }
+        if let Some((asset, edge)) = &self.photos_preview {
+            return done(crate::apple::preview_photo(asset, *edge).and_then(rendered), Some(QuickSource::PhotosPreview));
         }
         if let Some(job) = self.small {
             let r = job.run();
@@ -1245,7 +1251,22 @@ impl crate::Session {
         let h = Hasher128::new().str(&content_key(&p)).str("quick").u64(p.develop.hash64()).u64(apply_crop as u64).finish();
         let key = h.0 as u64;
         let embedded = self.embedded_of(&p).map(|(path, l)| (path, l, max_edge.clamp(1, SourceLevel::Preview.max_edge())));
-        Some(QuickJob { request_id: 0, photo: id, key, cached, embedded, small: apply_crop.then(|| Box::new(small)) })
+        Some(QuickJob { request_id: 0, photo: id, key, cached, embedded, photos_preview: None, small: apply_crop.then(|| Box::new(small)) })
+    }
+
+    /// Library-only preview, with a cached LightCraft render preferred if it exists. No RAW
+    /// decode job follows it and its pixels can never enter the decoded-original cache.
+    pub fn photos_grid_preview_job(&self, job: &RenderJob) -> Option<QuickJob> {
+        let Source::ApplePhotos { asset, .. } = &job.origin else { return None };
+        Some(QuickJob {
+            request_id: 0,
+            photo: job.photo,
+            key: job.key ^ 0x7fb4_85c2_142d_e5a9 ^ self.catalog.revision.rotate_left(13),
+            cached: job.cache.clone().into_iter().collect(),
+            embedded: None,
+            photos_preview: Some((asset.clone(), job.request.max_w.max(job.request.max_h).clamp(1, 512))),
+            small: None,
+        })
     }
 
     /// A first grid thumbnail for an unedited raw: the cached render for `job` (the real
@@ -1262,6 +1283,7 @@ impl crate::Session {
             key: job.key,
             cached: job.cache.clone().into_iter().collect(),
             embedded: Some((path, l, edge)),
+            photos_preview: None,
             small: None,
         })
     }

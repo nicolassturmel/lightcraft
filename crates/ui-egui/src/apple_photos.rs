@@ -1,12 +1,15 @@
 //! The main Apple Photos library, edit-copy saves and native mask jobs.
 use crate::LightcraftApp;
+use lightcraft_engine::catalog::PhotoId;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 #[derive(Default)]
 pub struct Browser {
     pub open: bool,
     pub error: Option<String>,
     pub last_copy: Option<Value>,
+    pub download_errors: BTreeMap<PhotoId, String>,
     attempted: bool,
     focused: bool,
     refreshed_at: f64,
@@ -22,6 +25,7 @@ pub fn intercept(app: &mut LightcraftApp, id: &str, params: &Value) -> Option<Re
     match id {
         "library.applePhotos" => Some(start_refresh(app)),
         "photo.saveApplePhotosCopy" => Some(start_copy(app, params)),
+        "photo.downloadApplePhotosOriginal" => Some(start_download(app, params)),
         "photo.reopenApplePhotosRecipe" => Some(start_recipe(app)),
         "library.importIntoApplePhotos" => Some(start_import(app, params)),
         "mask.add" | "mask.addComponent" if lightcraft_engine::apple::wants_vision(&app.session, params) => Some(start_mask(app, id, params)),
@@ -134,6 +138,86 @@ fn start_copy(app: &mut LightcraftApp, params: &Value) -> Result<Value, String> 
     Ok(json!({"pending":true}))
 }
 
+fn download_label(id: PhotoId) -> String {
+    format!("Downloading Photos original {}", id.0)
+}
+
+fn start_download(app: &mut LightcraftApp, params: &Value) -> Result<Value, String> {
+    let job = lightcraft_engine::apple::prepare_download(&app.session, params)?;
+    let label = download_label(job.id);
+    if app.tasks.is_running(&label) {
+        return Err("This photo's original is already being downloaded".into());
+    }
+    let id = job.id;
+    let generation = app.session.library_generation();
+    app.apple_photos.download_errors.remove(&id);
+    crate::tasks::spawn(
+        app,
+        &label,
+        Some("applePhotosDownload"),
+        move || {
+            let result = job.run();
+            (job, result)
+        },
+        move |app, ctx, (job, result)| {
+            if generation != app.session.library_generation() || app.session.apple_library.is_none() {
+                return;
+            }
+            match result.and_then(|downloaded| lightcraft_engine::apple::accept_download(&mut app.session, &job, downloaded)) {
+                Ok(_) => {
+                    app.renderer.retry_photo(id);
+                    app.apple_photos.download_errors.remove(&id);
+                    app.toast(ctx, "Original ready to edit");
+                }
+                Err(error) => {
+                    app.apple_photos.download_errors.insert(id, error.clone());
+                    app.toast_error(ctx, error);
+                }
+            }
+        },
+    )?;
+    Ok(json!({"pending":true, "id":id.0}))
+}
+
+fn download_button(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, rect: Option<egui::Rect>, key: &str) {
+    if !app.session.catalog.photo(id).is_some_and(|p| matches!(p.source, lightcraft_engine::catalog::Source::ApplePhotos { .. })) {
+        return;
+    }
+    let running = app.tasks.is_running(&download_label(id));
+    let error = app.apple_photos.download_errors.get(&id).cloned();
+    let ready = error.is_none() && app.session.media.has_source(id, lightcraft_engine::media::SourceLevel::Full);
+    let label = if running {
+        "Downloading…"
+    } else if ready {
+        "Original ready"
+    } else if error.is_some() {
+        "Retry download"
+    } else {
+        "Download original"
+    };
+    let label = if rect.is_some_and(|r| r.width() < 130.0) && !running && !ready { "Download" } else { label };
+    let button = egui::Button::new(egui::RichText::new(crate::i18n::tr(label)).size(11.5));
+    let response = ui
+        .add_enabled_ui(!running && !ready, |ui| match rect {
+            Some(rect) => ui.put(rect, button),
+            None => ui.add(button),
+        })
+        .inner
+        .on_hover_text(error.unwrap_or_else(|| "Retrieve only this original from iCloud. Other photos will not be downloaded.".into()));
+    crate::widgets::register(ui.ctx(), format!("button:photosDownload:{key}:{}", id.0), response.rect);
+    if response.clicked()
+        && let Err(error) = app.run("photo.downloadApplePhotosOriginal", json!({"id":id.0}))
+    {
+        app.toast_error(ui.ctx(), error);
+    }
+}
+
+pub fn grid_download_button(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, image: egui::Rect) {
+    let rect =
+        egui::Rect::from_center_size(egui::pos2(image.center().x, image.bottom() - 38.0), egui::vec2((image.width() - 12.0).clamp(1.0, 170.0), 24.0));
+    download_button(app, ui, id, Some(rect), "grid");
+}
+
 fn start_recipe(app: &mut LightcraftApp) -> Result<Value, String> {
     lightcraft_engine::apple::has_photo(&app.session)?;
     if app.tasks.is_running(RECIPE) {
@@ -145,12 +229,11 @@ fn start_recipe(app: &mut LightcraftApp) -> Result<Value, String> {
     };
     let asset = asset.clone();
     let generation = app.session.library_generation();
-    let network = app.session.media.photos_network;
     crate::tasks::spawn(
         app,
         RECIPE,
         Some("applePhotos"),
-        move || lightcraft_engine::apple::load_recipe(&asset, network),
+        move || lightcraft_engine::apple::load_recipe(&asset, false),
         move |app, ctx, result| {
             if generation != app.session.library_generation() || app.session.apple_library.is_none() {
                 return;
@@ -285,11 +368,10 @@ pub fn sidebar(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     if let Some(error) = app.apple_photos.error.clone() {
         ui.colored_label(egui::Color32::LIGHT_RED, error);
     }
-    let mut network = app.session.media.photos_network;
-    if ui.checkbox(&mut network, "iCloud downloads").on_hover_text("Allow Photos to retrieve an original when it is stored only in iCloud").changed()
-    {
-        let _ = app.run("library.photosNetwork", json!({"enabled":network}));
+    if let Some(id) = app.session.active() {
+        download_button(app, ui, id, None, "selected");
     }
+    ui.small(crate::i18n::tr("Photos previews only. Download each original when needed."));
     let can_save = app.session.active().is_some() && !app.tasks.is_running(SAVE);
     let button = ui.add_enabled(can_save, egui::Button::new("Save edited copy to Photos"));
     crate::widgets::register(ui.ctx(), "button:photosSaveCopy", button.rect);
@@ -338,6 +420,8 @@ mod tests {
         assert!(text.contains("Apple Photos"));
         assert!(text.contains("Photos permission needs attention"));
         assert!(text.contains("Save edited copy to Photos"));
+        assert!(text.contains("Download each original when needed"));
+        assert!(!text.contains("iCloud downloads"));
         assert!(text.contains("Apple Photos unavailable"));
         assert!(!text.contains("Import selected originals"));
         assert!(!text.contains("Import photos with"));
@@ -348,5 +432,54 @@ mod tests {
         let text = host.app.shadow.as_ref().unwrap().painted_text().join("\n");
         assert!(text.contains("Connecting to Apple Photos"));
         assert!(!text.contains("No photos"));
+    }
+
+    #[test]
+    fn photos_library_shows_a_separate_download_button_on_each_photo() {
+        use lightcraft_engine::{
+            catalog::{MediaKind, Op, Photo, Source},
+            media::SourceLevel,
+        };
+        use std::{sync::Arc, time::Duration};
+        let mut session = lightcraft_engine::Session::new().with_apple_photos(None);
+        for n in 1..=2 {
+            let id = PhotoId(n);
+            let mut photo = Photo::new(
+                id,
+                Source::ApplePhotos { asset: format!("test-{n}"), revision: "r1".into() },
+                "example.CR3",
+                "CR3",
+                8,
+                6,
+                "2026-10-11T12:00:00Z",
+            );
+            photo.kind = MediaKind::Raw;
+            session.catalog.apply(Op::AddPhoto { photo: Box::new(photo) }).unwrap();
+            session.media.insert(
+                id,
+                SourceLevel::Thumb,
+                Arc::new(lightcraft_raster::Rgb32f { width: 8, height: 6, data: vec![[0.1, 0.2, 0.3]; 48] }),
+            );
+        }
+        session.apple_library.as_mut().unwrap().loaded = true;
+        let mut app = LightcraftApp::new(session, crate::Services::default());
+        app.ui.settings.gpu = false;
+        app.apple_photos.attempted = true;
+        app.apple_photos.refreshed_at = 999.0; // Synthetic library: no consent or real PhotoKit request.
+        let mut host = crate::headless::Headless::new(app, [1200.0, 800.0], 1.0);
+        host.settle(Duration::from_secs(10));
+        for n in 1..=2 {
+            let button = host.app.widgets.iter().find(|(id, _)| id == &format!("button:photosDownload:grid:{n}")).unwrap().1;
+            let thumb = host.app.widgets.iter().find(|(id, _)| id == &format!("thumb:{n}")).unwrap().1;
+            assert!(thumb.contains_rect(button), "download action belongs to its photo");
+        }
+        host.app.apple_photos.download_errors.insert(PhotoId(1), "Connection unavailable".into());
+        host.step();
+        let ctx = host.view.ctx.clone();
+        host.app.headless_screenshot(&ctx, false);
+        let text = host.app.shadow.as_ref().unwrap().painted_text().join("\n");
+        assert!(text.contains("Retry download"));
+        assert!(text.contains("Download original"), "the other photo keeps its own download action");
+        assert!(host.app.tasks.is_empty(), "drawing the buttons never starts a download");
     }
 }

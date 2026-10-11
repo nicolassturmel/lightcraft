@@ -460,6 +460,15 @@ pub fn request_thumb(app: &mut LightcraftApp, id: PhotoId, size: usize, priority
     {
         app.renderer.thumb_jobs_built += 1;
     }
+    if !app.session.media.has_source(id, lightcraft_engine::media::SourceLevel::Thumb)
+        && let Some(preview) = app.session.photos_grid_preview_job(&job)
+    {
+        if let Some(photo) = app.session.catalog.photo(id) {
+            app.renderer.remember_thumb(photo, bucket, preview.key, false);
+        }
+        app.renderer.request_quick(Slot::Thumb(id), preview, priority);
+        return;
+    }
     let quick = if app.renderer.textures.contains_key(&Slot::Thumb(id)) { None } else { app.session.quick_thumb_job(&job) };
     if let Some(photo) = app.session.catalog.photo(id) {
         app.renderer.remember_thumb(photo, bucket, job.key, quick.is_some());
@@ -630,6 +639,9 @@ fn cell(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square
     }
     if photo.flag == Flag::Reject {
         p.rect_filled(img_rect, 0.0, Color32::from_black_alpha(110));
+    }
+    if onscreen {
+        crate::apple_photos::grid_download_button(app, ui, id, img_rect);
     }
     // interaction
     if let Some(k) = app.ui.keyword_painter.clone() {

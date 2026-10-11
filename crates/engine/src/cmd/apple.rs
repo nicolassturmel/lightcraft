@@ -1,5 +1,4 @@
 use super::{CommandSpec, cmd};
-use serde_json::json;
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -20,17 +19,16 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(
-            "library.photosNetwork",
-            "Photos iCloud Downloads",
-            [],
+            "photo.downloadApplePhotosOriginal",
+            "Download Original from iCloud",
+            ["Photo"],
             None,
-            "{enabled:bool} → allow PhotoKit to retrieve originals from iCloud on demand",
+            "{id?:active} → download and decode this Photos original only; all other reads keep network access disabled",
             crate::apple::primary,
             |s, p| {
-                s.media.photos_network =
-                    p.get("enabled").and_then(|v| v.as_bool()).ok_or_else(|| super::bad("library.photosNetwork", "enabled must be a boolean"))?;
-                s.catalog.revision = s.catalog.revision.wrapping_add(1);
-                Ok(json!({"enabled":s.media.photos_network}))
+                let job = crate::apple::prepare_download(s, p).map_err(crate::EngineError::Other)?;
+                let downloaded = job.run().map_err(crate::EngineError::Other)?;
+                crate::apple::accept_download(s, &job, downloaded).map_err(crate::EngineError::Other)
             }
         ),
         cmd!(
@@ -64,7 +62,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 let lightcraft_catalog::Source::ApplePhotos { asset, .. } = &photo.source else {
                     return Err(super::bad("photo.reopenApplePhotosRecipe", "select a Photos copy"));
                 };
-                let recipe = crate::apple::load_recipe(asset, s.media.photos_network).map_err(crate::EngineError::Other)?;
+                let recipe = crate::apple::load_recipe(asset, false).map_err(crate::EngineError::Other)?;
                 crate::apple::apply_recipe(s, &recipe)
             }
         ),

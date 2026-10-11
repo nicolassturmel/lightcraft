@@ -13,7 +13,8 @@ Hours are Opus 5.5 agent wall-clock hours (see [target-app-parity.md](target-app
 
 This macOS fork uses Photos as its main library and stores original-safe edits as metadata or
 rendered copies in Photos > LightCraft. It mitigates CR3 decoding and Subject/Background
-segmentation with Apple system APIs.
+segmentation with Apple system APIs. Library browsing uses local Photos previews; iCloud
+originals are retrieved only through each photo’s Download original button.
 See [apple-integration.md](apple-integration.md). The portable gaps and scores below remain
 open; no broader camera-coverage claim is made from one Canon R8 test.
 

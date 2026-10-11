@@ -22,6 +22,19 @@ pub struct RawImage {
     pub pixels: Vec<[f32; 4]>,
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn response_error(response: &Value) -> Option<String> {
+    let error = response.get("error")?.as_str()?;
+    // PHPhotosError.networkAccessRequired: an iCloud original, not a RAW decoder failure.
+    if response.get("errorDomain").and_then(Value::as_str) == Some("PHPhotosErrorDomain")
+        && response.get("errorCode").and_then(Value::as_i64) == Some(3164)
+    {
+        Some("Original stored in iCloud. Click Download original for this photo to retrieve it.".into())
+    } else {
+        Some(error.into())
+    }
+}
+
 /// Send one bounded request; errors and timeouts never leave a helper process behind.
 pub fn invoke(request: &Value, timeout: Duration) -> Result<Value, String> {
     #[cfg(target_os = "macos")]
@@ -70,6 +83,17 @@ pub fn decode_photos(asset: &str, max_edge: usize, network: bool) -> Result<RawI
     {
         let _ = (asset, max_edge, network);
         Err("Apple Photos is available only on macOS".into())
+    }
+}
+
+/// A rendered Photos thumbnail for browsing only. Network access is always disabled.
+pub fn photos_preview(asset: &str, max_edge: usize) -> Result<RawImage, String> {
+    #[cfg(target_os = "macos")]
+    return native::decode_image(serde_json::json!({"operation":"photos-preview", "asset":asset, "maxEdge":max_edge.clamp(1, 1024)}));
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (asset, max_edge);
+        Err("Apple Photos previews are available only on macOS".into())
     }
 }
 
@@ -232,8 +256,8 @@ mod native {
             let message = bounded_read(&errors, 16_000).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
             format!("invalid Apple bridge response ({status}): {e} {message}")
         })?;
-        if let Some(error) = response.get("error").and_then(Value::as_str) {
-            return Err(error.into());
+        if let Some(error) = super::response_error(&response) {
+            return Err(error);
         }
         if !status.success() {
             return Err(format!("Apple bridge exited with {status}"));
@@ -321,6 +345,22 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloud_original_errors_explain_the_per_photo_action_without_hiding_other_failures() {
+        let response = serde_json::json!({"error":"opaque localized error", "errorDomain":"PHPhotosErrorDomain", "errorCode":3164});
+        let message = response_error(&response).unwrap();
+        assert!(message.contains("iCloud"));
+        assert!(message.contains("Download original for this photo"));
+        for response in [
+            serde_json::json!({"error":"network unavailable", "errorDomain":"PHPhotosErrorDomain", "errorCode":3169}),
+            serde_json::json!({"error":"different failure", "errorDomain":"OtherDomain", "errorCode":3164}),
+            serde_json::json!({"error":"invalid RAW"}),
+        ] {
+            assert_eq!(response_error(&response).as_deref(), response["error"].as_str());
+        }
+        assert!(response_error(&serde_json::json!({"width":6000})).is_none());
+    }
 
     #[test]
     fn rejects_hostile_sizes_before_allocation() {

@@ -460,6 +460,26 @@ impl Renderer {
         self.queue.clear();
     }
 
+    /// An explicit original download replaced a Photos preview. Retire old requests (including
+    /// failures still in flight) so they cannot hide the decoded original or erase its retry.
+    pub fn retry_photo(&mut self, id: PhotoId) {
+        let affected = |slot: &Slot| match slot {
+            Slot::Thumb(photo) | Slot::ThumbQuick(photo) => *photo == id,
+            _ => slot.is_view() || matches!(slot, Slot::Preview | Slot::Compare(_) | Slot::Second | Slot::Prefetch(_)),
+        };
+        self.thumb_inputs.remove(&id);
+        self.request_ids.retain(|s, _| !affected(s));
+        self.shown_ids.retain(|s, _| !affected(s));
+        self.quick_tried.retain(|s, _| !affected(s));
+        self.failed.retain(|s, _| !affected(s));
+        self.prefetched.retain(|s, _| !affected(s));
+        self.pending.retain(|s, _| !affected(s));
+        self.stages.retain(|s, _| !affected(s));
+        self.textures.retain(|_, t| t.photo != id);
+        self.queue.retain(|q| !affected(&q.slot));
+        self.pool.reprioritize(|s, p| (!affected(s)).then_some(p));
+    }
+
     pub fn is_pending(&self, slot: Slot) -> bool {
         self.pending.contains_key(&slot)
     }
@@ -918,6 +938,31 @@ mod thumbnail_tests {
         assert!(r.thumb_current(&p, 384, 10));
         r.catalog_rev = 1;
         assert!(!r.thumb_current(&p, 384, 10));
+    }
+
+    #[test]
+    fn explicit_photo_retry_retires_old_failures_and_requests_without_resetting_other_thumbnails() {
+        let p = photo();
+        let other = PhotoId(p.id.0 + 1);
+        let slot = Slot::Thumb(p.id);
+        let mut r = Renderer::default();
+        for (s, key) in [(slot, 77), (Slot::Main, 88), (Slot::Thumb(other), 99)] {
+            r.pending.insert(s, (key, 10));
+            r.request_ids.insert(s, key);
+            r.failed.insert(s, (key, "old Photos failure".into(), 0));
+            r.quick_tried.insert(s, key);
+        }
+        r.remember_thumb(&p, 384, 77, false);
+        r.retry_photo(p.id);
+        assert!(!r.thumb_inputs.contains_key(&p.id));
+        for s in [slot, Slot::Main] {
+            assert!(!r.pending.contains_key(&s));
+            assert!(!r.request_ids.contains_key(&s), "old completions must be discarded");
+            assert!(r.failure(s).is_none());
+            assert!(!r.quick_tried.contains_key(&s));
+        }
+        assert_eq!(r.request_ids.get(&Slot::Thumb(other)), Some(&99));
+        assert!(r.is_pending(Slot::Thumb(other)));
     }
 
     #[derive(Default)]

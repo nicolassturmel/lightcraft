@@ -1,7 +1,7 @@
 //! Apple Photos is the source of truth. Only adjustment metadata belongs to LightCraft.
 use crate::{
     LibrarySource, Selection, Session,
-    media::{SourceLevel, SourceRef},
+    media::{DecodedSource, SourceLevel, SourceRef},
 };
 use lightcraft_catalog::{Album, AlbumId, Catalog, ColorLabel, Flag, HistoryStep, MediaKind, Meta, Op, Photo, PhotoId, Source, Version};
 use lightcraft_develop::{DevelopSettings, MaskShape, SegMask};
@@ -512,6 +512,28 @@ pub fn decode_photo(asset: &str, max_edge: usize, network: bool) -> Result<crate
     }
 }
 
+pub fn preview_photo(asset: &str, max_edge: usize) -> Result<lightcraft_raster::Rgba8, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let decoded = lightcraft_apple::photos_preview(asset, max_edge)?;
+        let encode = |v: f32| (lightcraft_color::transfer::linear_to_srgb(v.clamp(0.0, 1.0)) * 255.0).round() as u8;
+        Ok(lightcraft_raster::Rgba8 {
+            width: decoded.metadata.width,
+            height: decoded.metadata.height,
+            data: decoded
+                .pixels
+                .into_iter()
+                .map(|[r, g, b, a]| [encode(r), encode(g), encode(b), (a.clamp(0.0, 1.0) * 255.0).round() as u8])
+                .collect(),
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (asset, max_edge);
+        Err("Apple Photos previews are available only on macOS".into())
+    }
+}
+
 pub fn import_paths(params: &Value) -> Result<Vec<String>, String> {
     let paths = params.get("paths").and_then(Value::as_array).ok_or("Select image files to import into Apple Photos")?;
     if paths.is_empty() || paths.len() > 200 {
@@ -539,6 +561,64 @@ pub struct CopyJob {
     render: crate::export::PreparedExport,
     asset: String,
     recipe: Value,
+}
+
+/// An explicit request for one original. Normal source refs never have network access.
+pub struct DownloadJob {
+    pub id: PhotoId,
+    generation: u64,
+    origin: Source,
+    source: SourceRef,
+}
+
+pub struct DownloadedOriginal {
+    full: DecodedSource,
+    preview: DecodedSource,
+    thumb: DecodedSource,
+}
+
+impl DownloadedOriginal {
+    fn from_source(full: DecodedSource) -> Self {
+        let reduced = |edge| {
+            let image = lightcraft_raster::resample::fit(&full.image, edge, edge, lightcraft_raster::resample::Filter::Box);
+            DecodedSource::new(Arc::new(image), full.info.clone())
+        };
+        Self { preview: reduced(SourceLevel::Preview.max_edge()), thumb: reduced(SourceLevel::Thumb.max_edge()), full }
+    }
+}
+
+pub fn prepare_download(s: &Session, params: &Value) -> Result<DownloadJob, String> {
+    primary(s)?;
+    let id = match params.get("id") {
+        Some(value) => PhotoId(value.as_u64().ok_or("Photo id must be an unsigned integer")?),
+        None => s.active().ok_or("Select a photo first")?,
+    };
+    let photo = s.catalog.photo(id).ok_or("This Photos image is no longer available")?;
+    let Source::ApplePhotos { asset, .. } = &photo.source else { return Err("Select an Apple Photos image".into()) };
+    Ok(DownloadJob {
+        id,
+        generation: s.library_generation(),
+        origin: photo.source.clone(),
+        source: SourceRef::ApplePhotos { asset: asset.clone(), max_edge: SourceLevel::Full.max_edge(), network: true },
+    })
+}
+
+impl DownloadJob {
+    pub fn run(&self) -> Result<DownloadedOriginal, String> {
+        self.source.load_source().map(DownloadedOriginal::from_source)
+    }
+}
+
+pub fn accept_download(s: &mut Session, job: &DownloadJob, downloaded: DownloadedOriginal) -> Result<Value, String> {
+    if s.library_generation() != job.generation || s.catalog.photo(job.id).is_none_or(|p| p.source != job.origin) {
+        return Err("The Photos original changed during download; refresh and retry".into());
+    }
+    let (width, height) = (downloaded.full.image.width, downloaded.full.image.height);
+    s.media.insert_source(job.id, SourceLevel::Thumb, downloaded.thumb);
+    s.media.insert_source(job.id, SourceLevel::Preview, downloaded.preview);
+    s.media.insert_source(job.id, SourceLevel::Full, downloaded.full);
+    s.catalog.revision = s.catalog.revision.wrapping_add(1);
+    Ok(json!({"id":job.id.0, "width":width, "height":height, "originalUnchanged":true}))
 }
 
 pub fn prepare_copy(s: &mut Session, params: &Value) -> Result<CopyJob, String> {
@@ -691,6 +771,76 @@ mod tests {
         s.apply_photos_snapshot(projected(&["a", "b"], None)).unwrap();
         s.selection = Selection::single(s.apple_library.as_ref().unwrap().asset_ids["a"]);
         s
+    }
+
+    #[test]
+    fn library_previews_never_supply_decoded_originals_to_development_or_exports() {
+        let mut s = photos_session();
+        let id = s.active().unwrap();
+        let job = s.thumb_job(id, 384).unwrap();
+        assert!(matches!(&job.source, SourceRef::ApplePhotos { network: false, .. }));
+        let preview = s.photos_grid_preview_job(&job).unwrap();
+        assert_eq!(preview.photos_preview, Some(("a".into(), 384)));
+        assert!(preview.small.is_none(), "browsing must not follow the preview with a RAW decode");
+        assert!(preview.embedded.is_none());
+        let (cache, key) = job.cache.unwrap();
+        cache.put(key, Arc::new(lightcraft_raster::Rgba8 { width: 4, height: 3, data: vec![[80, 100, 120, 255]; 12] }));
+        let result = preview.run();
+        assert_eq!(result.quick, Some(crate::media::QuickSource::Cached));
+        assert!(result.loaded.is_none());
+        s.accept(&result);
+        for level in [SourceLevel::Thumb, SourceLevel::Preview, SourceLevel::Full] {
+            assert!(!s.media.has_source(id, level));
+            let photo = s.catalog.photo(id).unwrap().clone();
+            assert!(matches!(s.media.source_ref(&photo, level), SourceRef::ApplePhotos { network: false, .. }));
+        }
+        assert!(matches!(s.render_job(id, 6000, 4000, false, true).unwrap().source, SourceRef::ApplePhotos { network: false, .. }));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn downloads_are_explicit_per_photo_and_never_enable_network_for_later_reads() {
+        let mut s = photos_session();
+        let active = s.active().unwrap();
+        let other = s.apple_library.as_ref().unwrap().asset_ids["b"];
+        let before = s.catalog.to_snapshot();
+        let job = prepare_download(&s, &json!({"id":other.0})).unwrap();
+        assert_eq!(job.id, other);
+        assert!(matches!(&job.source, SourceRef::ApplePhotos { asset, network:true, .. } if asset == "b"));
+        assert!(!s.media.has_source(other, SourceLevel::Thumb));
+        assert!(prepare_download(&s, &json!({"id":"bad"})).is_err());
+        assert!(prepare_download(&s, &json!({"id":999})).is_err());
+        let image = Arc::new(lightcraft_raster::Rgb32f { width: 8, height: 6, data: vec![[1.5, 0.2, 0.3]; 48] });
+        let source = DecodedSource::new(image.clone(), Some(lightcraft_pipeline::SourceInfo { raw: true, ..Default::default() }));
+        let downloaded = DownloadedOriginal::from_source(source);
+        let revision = s.catalog.revision;
+        let result = accept_download(&mut s, &job, downloaded).unwrap();
+        assert_eq!(result["width"], 8);
+        assert_eq!(s.catalog.to_snapshot(), before, "downloads must not change Photos or adjustment metadata");
+        assert_eq!(s.active(), Some(active));
+        assert!(s.catalog.revision > revision, "failed renders must be retried after the explicit download");
+        for level in [SourceLevel::Thumb, SourceLevel::Preview, SourceLevel::Full] {
+            assert!(s.media.has_source(other, level));
+            assert!(!s.media.has_source(active, level));
+            let photo = s.catalog.photo(other).unwrap().clone();
+            let SourceRef::Loaded(decoded) = s.media.source_ref(&photo, level) else { panic!("download was not cached") };
+            assert!(decoded.info.as_ref().unwrap().raw);
+            assert_eq!(decoded.image.data[0][0], 1.5, "linear highlights must survive the download");
+        }
+        for photo in s.catalog.photos().cloned().collect::<Vec<_>>() {
+            assert!(matches!(s.media.origin_ref(&photo.source, 6000), SourceRef::ApplePhotos { network: false, .. }));
+        }
+        let old = prepare_download(&s, &json!({"id":other.0})).unwrap();
+        let mut changed = projected(&["a", "b"], None);
+        changed.snapshot.assets[1].revision = "new-original".into();
+        s.apply_photos_snapshot(changed).unwrap();
+        let decoded = DownloadedOriginal::from_source(DecodedSource::new(image.clone(), None));
+        assert!(accept_download(&mut s, &old, decoded).is_err());
+        assert!(!s.media.has_source(other, SourceLevel::Full));
+        let old = prepare_download(&s, &json!({"id":other.0})).unwrap();
+        s = s.with_apple_photos(None);
+        s.apply_photos_snapshot(projected(&["a", "b"], None)).unwrap();
+        assert!(accept_download(&mut s, &old, DownloadedOriginal::from_source(DecodedSource::new(image, None))).is_err());
     }
 
     #[test]

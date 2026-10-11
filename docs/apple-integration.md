@@ -43,15 +43,26 @@ runs in the background at launch, on returning to the app, periodically, and aft
 copy saves. Stable native identifiers preserve selection and edit drafts as Photos adds,
 removes or reorganizes images. A malformed or incomplete response keeps the current view.
 
-Images are retrieved **on demand** through `PHAssetResourceManager`. RAW+JPEG pairs prefer the
+The grid and filmstrip show locally cached, rendered **Photos previews** via
+`PHImageManager.requestImage`, with network access disabled. Browsing does not retrieve RAW
+resources. These thumbnails never become development or export sources, so they cannot replace
+original pixels or apply baked Photos adjustments twice. A cached LightCraft render is preferred
+when available. After downloading an original, the grid can render the current LightCraft edits.
+
+Originals are retrieved through `PHAssetResourceManager`. RAW+JPEG pairs prefer the
 RAW original, including `alternatePhoto`; rendered assets use their current Photos rendition.
 The public PhotoKit resource API requires a short-lived decode file. Its enclosing temporary
 directory is removed after decoding, errors or bridge timeouts. There is no permanent import of
 Photos originals, no `Originals` directory, and no LightCraft `catalog.log` or `catalog.snap` for
 the Photos session. Render and decoded-source caches are in memory.
 
-Enable **iCloud downloads** in the sidebar to retrieve originals stored only in iCloud. Download
-permission defaults to off each session. Unavailable resources report an error; exports never
+Use **Download original** on an individual grid photo, or on the selected photo in the sidebar,
+to retrieve just that original from iCloud. The background task shows **Downloading…** and
+**Retry download** on failure. Network access is enabled only for this explicit request; browsing,
+editing, recipe reads and exports never enable downloads automatically. A missing cloud original
+explains this per-photo action instead of reporting opaque PhotoKit error 3164. Downloaded pixels
+are cached in memory at full, preview and thumbnail sizes. Photos manages its own local/iCloud
+cache; if an original is later evicted, another explicit download may be needed. Exports never
 silently substitute a lower-resolution image. **Import Photos…** and dropped image files create
 assets directly in Photos and retain the input files. File imports are limited to 200 per call;
 use Photos for importing folders and managing albums, names, deletions and original metadata.
@@ -113,7 +124,7 @@ commands remain available to CLI/MCP clients:
 
 ```json
 {"command":"library.applePhotos","params":{}}
-{"command":"library.photosNetwork","params":{"enabled":true}}
+{"command":"photo.downloadApplePhotosOriginal","params":{"id":42}}
 {"command":"photo.saveApplePhotosCopy","params":{}}
 {"command":"photo.reopenApplePhotosRecipe","params":{}}
 {"command":"library.importIntoApplePhotos","params":{"paths":["/path/to/image.CR3"]}}
@@ -126,13 +137,17 @@ binary buffers are bounded. Timeout, process errors and parent shutdown reap the
 remove temporary decode files.
 
 Regression tests cover native asset identity, nested albums, additions/removals, atomic refresh,
-metadata recovery after restart, failed-save retries, ownership guards and the full-size copy
+metadata recovery after restart, failed-save retries, ownership guards, per-photo download
+isolation, stale-download rejection, library-preview/original separation and the full-size copy
 render/recipe without requesting access to a personal photothèque. A SHA-256-pinned public CC0
 Canon R8 C-RAW verifies native 6000×4000 decoding and preview colour conversion. UI snapshots
-verify the Photos controls in the normal sidebar. Real PhotoKit writes require an authorized
+verify the Photos controls in the normal sidebar and download buttons on separate grid photos.
+Real PhotoKit writes require an authorized
 macOS session and are not performed against a personal library by the automated tests.
 
 API references: [PhotoKit](https://developer.apple.com/documentation/photos),
+[Photos preview requests](https://developer.apple.com/documentation/photos/phimagemanager/requestimage(for:targetsize:contentmode:options:resulthandler:)),
+[Preview network policy](https://developer.apple.com/documentation/photos/phimagerequestoptions/isnetworkaccessallowed),
 [PHContentEditingOutput](https://developer.apple.com/documentation/photos/phcontenteditingoutput),
 [PHAdjustmentData](https://developer.apple.com/documentation/photos/phadjustmentdata),
 [CIRAWFilter](https://developer.apple.com/documentation/coreimage/cirawfilter),

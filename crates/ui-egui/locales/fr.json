@@ -1884,5 +1884,13 @@
   "Panels": "Panels",
   "Reset Panel Layout": "Reset Panel Layout",
   "Resize panel window": "Resize panel window",
-  "Resize panels": "Resize panels"
+  "Resize panels": "Resize panels",
+  "Download original": "Télécharger l’original",
+  "Download": "Télécharger",
+  "Downloading…": "Téléchargement…",
+  "Original ready": "Original disponible",
+  "Retry download": "Réessayer",
+  "Original ready to edit": "Original prêt à retoucher",
+  "Download Original from iCloud": "Télécharger l’original depuis iCloud",
+  "Photos previews only. Download each original when needed.": "Aperçus Photos uniquement. Téléchargez chaque original au besoin."
 }

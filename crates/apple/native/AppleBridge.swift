@@ -1,5 +1,6 @@
 // System framework calls live in a separate process; Rust never crosses an unsafe FFI boundary.
 import Foundation
+import AppKit
 import Photos
 import CoreImage
 import ImageIO
@@ -148,6 +149,45 @@ func photosAsset(_ id: String) throws -> PHAsset {
     guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject,
           asset.mediaType == .image else { throw BridgeError("This photo is no longer available in Apple Photos; refresh the library") }
     return asset
+}
+
+// Library thumbnails use Photos' rendered preview, never the RAW resource or iCloud network.
+func previewPhotos(_ request: Request) async throws -> [String: Any] {
+    _ = try await authorizePhotos()
+    let asset = try photosAsset(required(request.asset, "asset"))
+    let edge = request.maxEdge ?? 512
+    guard edge > 0, edge <= 1024 else { throw BridgeError("Invalid Photos thumbnail size") }
+    let options = PHImageRequestOptions()
+    options.version = .current
+    options.deliveryMode = .fastFormat // Exactly one callback; locally cached degraded previews are welcome.
+    options.resizeMode = .fast
+    options.isNetworkAccessAllowed = false
+    let image: NSImage = try await withCheckedThrowingContinuation { continuation in
+        PHImageManager.default().requestImage(for: asset, targetSize: CGSize(width: edge, height: edge),
+            contentMode: .aspectFit, options: options) { image, info in
+            if let image { continuation.resume(returning: image) }
+            else if let error = info?[PHImageErrorKey] as? Error { continuation.resume(throwing: error) }
+            else { continuation.resume(throwing: BridgeError("No local Photos preview. Click Download original for this photo.")) }
+        }
+    }
+    guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+          let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB) else {
+        throw BridgeError("Photos supplied an unreadable preview")
+    }
+    let source = CIImage(cgImage: cgImage)
+    let scale = min(1, Double(edge) / max(source.extent.width, source.extent.height))
+    let scaled = source.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+    let bounds = scaled.extent.integral
+    let w = Int(bounds.width), h = Int(bounds.height)
+    let count = try checkedDimensions(w, h, limit: 1_048_576)
+    let context = CIContext(options: [.cacheIntermediates: false])
+    var pixels = [Float](repeating: 0, count: count * 4)
+    pixels.withUnsafeMutableBytes { buffer in
+        if let address = buffer.baseAddress { context.render(scaled, toBitmap: address, rowBytes: w * 16, bounds: bounds, format: .RGBAf, colorSpace: space) }
+    }
+    try pixels.withUnsafeBytes { try Data($0).write(to: URL(fileURLWithPath: try required(request.output, "output")), options: .atomic) }
+    return ["width":w, "height":h, "temperature":6500.0, "tint":0.0, "raw":false,
+        "decoder":"Apple Photos cached preview", "colorSpace":"extended-linear-sRGB"]
 }
 
 @available(macOS 12.0, *)
@@ -396,6 +436,7 @@ func foregroundMask(_ request: Request) throws -> [String: Any] {
                     "vision": ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 14, minorVersion: 0, patchVersion: 0))]
             case "photos-import": result = try await importPhotos(request)
             case "photos-snapshot": result = try await snapshotPhotos(request)
+            case "photos-preview": result = try await previewPhotos(request)
             case "photos-decode":
                 guard #available(macOS 12.0, *) else { throw BridgeError("Photos image decoding requires macOS 12 or later") }
                 result = try await decodePhotos(request)
@@ -413,7 +454,8 @@ func foregroundMask(_ request: Request) throws -> [String: Any] {
             guard response.count <= 192_000 else { throw BridgeError("Photos page is too large; request fewer photos") }
             try FileHandle.standardOutput.write(contentsOf: response)
         } catch {
-            let result = ["error": error.localizedDescription]
+            let native = error as NSError
+            let result: [String: Any] = ["error": native.localizedDescription, "errorDomain": native.domain, "errorCode": native.code]
             if let data = try? JSONSerialization.data(withJSONObject: result) { try? FileHandle.standardOutput.write(contentsOf: data) }
             exit(1)
         }

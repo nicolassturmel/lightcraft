@@ -1070,6 +1070,7 @@ fn quick_name(q: lightcraft_engine::media::QuickSource) -> &'static str {
     match q {
         QuickSource::Cached => "cached",
         QuickSource::Embedded => "embedded",
+        QuickSource::PhotosPreview => "photosPreview",
         QuickSource::Small => "small",
     }
 }

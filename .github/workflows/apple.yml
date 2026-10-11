@@ -35,6 +35,6 @@ jobs:
       - name: Photos ownership, edit durability, RAW and stored masks
         run: |
           cargo test --locked -p lightcraft-engine --lib apple::tests
-          cargo test --locked -p lightcraft-ui-egui photos_library_controls
+          cargo test --locked -p lightcraft-ui-egui photos_library
           cargo test --locked -p lightcraft-pipeline stored_vision
           cargo test --locked -p lightcraft-pipeline stored_segmentations_render
