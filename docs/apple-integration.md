@@ -23,7 +23,7 @@ binary directly from a terminal or automation host can attribute consent to that
 |---|---|---|
 | System Photo Library and edited copies | PhotoKit | 11 |
 | Photos image decoding and CR3 | Core Image / `CIRAWFilter` | 12 |
-| Subject/background masks | `VNGenerateForegroundInstanceMaskRequest` | 14 |
+| Subject/background/object masks | `VNGenerateForegroundInstanceMaskRequest`, `VNInstanceMaskObservation` | 14 |
 
 Normal macOS launches use Photos automatically, including when old UI preferences contain a
 file-library path. `--library DIR` or an explicit `LIGHTCRAFT_LIBRARY` environment variable opens
@@ -111,11 +111,25 @@ scaling and full-size decoding use the same native RAW decoder. Camera support d
 installed macOS RAW support. The portable file loader falls back to Rust when Apple cannot
 open a CR3; the Photos path reports Apple decoding errors directly.
 
-On macOS 14+, Subject and Background masks use Apple Vision foreground-instance segmentation
-on an oriented, uncropped preview. The result is stored as portable quantized logits in the
-adjustment metadata; Background complements that coverage. Crop, scaling and edge refinement
-use the same stored selection. Demo images and explicit heuristic selections retain the
-portable implementation. No-subject and malformed responses report an error.
+On macOS 14+, Subject, Background and Object masks use Apple Vision foreground-instance
+segmentation on an oriented, uncropped preview. Subject selects the detected foreground;
+Background complements it. **Object** creates an empty selection immediately: click a detected
+foreground object to include its instance, or Option-click to exclude an entire detected instance.
+Multiple clicks can include several objects. Excluding the last selected object produces an
+empty mask. A click on undetected background reports an error and preserves the previous mask.
+Vision can group related objects into one instance; use Brush for finer manual corrections.
+
+The result is stored as portable quantized logits in the adjustment metadata. Crop, scaling
+and edge refinement use that stored selection; rendering and export never require a model.
+Selection runs in a background task and stale results are discarded after photo, mask or
+library changes. Originals are read with PhotoKit network access disabled, so a cloud-only
+original still requires its explicit per-photo download first.
+
+Real macOS libraries never prepare, refine with, offer or download SAM for masks. **Describe**
+is disabled with an explanation: this Vision API does not provide text-prompt segmentation.
+Existing stored Describe masks remain renderable. Demo sessions and other platforms retain
+the portable implementation; explicit heuristic Subject/Background selections remain available.
+No-subject and malformed native responses report errors without switching providers.
 
 ## Commands and verification
 
@@ -142,6 +156,10 @@ isolation, stale-download rejection, library-preview/original separation and the
 render/recipe without requesting access to a personal photothèque. A SHA-256-pinned public CC0
 Canon R8 C-RAW verifies native 6000×4000 decoding and preview colour conversion. UI snapshots
 verify the Photos controls in the normal sidebar and download buttons on separate grid photos.
+Mask regressions verify that Object/Add/Subtract/Intersect never open a SAM dialog, text selection
+stays disabled, and stale object results cannot write adjustments. The CC0 R8 fixture also checks
+real Vision inference, click/mask orientation, exclusion of the sole selected instance, and
+rejection of a background click without touching the personal Photos library.
 Real PhotoKit writes require an authorized
 macOS session and are not performed against a personal library by the automated tests.
 
@@ -151,4 +169,5 @@ API references: [PhotoKit](https://developer.apple.com/documentation/photos),
 [PHContentEditingOutput](https://developer.apple.com/documentation/photos/phcontenteditingoutput),
 [PHAdjustmentData](https://developer.apple.com/documentation/photos/phadjustmentdata),
 [CIRAWFilter](https://developer.apple.com/documentation/coreimage/cirawfilter),
-[Vision foreground masks](https://developer.apple.com/documentation/vision/vngenerateforegroundinstancemaskrequest).
+[Vision foreground masks](https://developer.apple.com/documentation/vision/vngenerateforegroundinstancemaskrequest),
+[Vision instance labels](https://developer.apple.com/documentation/vision/vninstancemaskobservation/instancemask).

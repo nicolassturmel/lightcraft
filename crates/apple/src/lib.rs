@@ -152,15 +152,41 @@ pub fn decode_raw_bytes(bytes: &[u8], max_edge: usize) -> Result<RawImage, Strin
 
 /// Vision coverage over the uncropped, oriented, linear Rec.2020 image, stretched to a square.
 pub fn foreground_mask(width: usize, height: usize, pixels: &[[f32; 3]], side: usize) -> Result<Vec<f32>, String> {
+    vision_mask(width, height, pixels, side, None)
+}
+
+/// Pick foreground instances at normalized, top-left-origin image points. Exclusions remove
+/// whole detected instances; an empty selection stays empty (never selects every instance).
+pub fn foreground_instances(
+    width: usize,
+    height: usize,
+    pixels: &[[f32; 3]],
+    side: usize,
+    include: &[[f64; 2]],
+    exclude: &[[f64; 2]],
+) -> Result<Vec<f32>, String> {
+    if include.len().saturating_add(exclude.len()) > 64 || include.iter().chain(exclude).flatten().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+    {
+        return Err("invalid or oversized Apple Vision object clicks".into());
+    }
+    vision_mask(width, height, pixels, side, Some((include, exclude)))
+}
+
+type InstancePoints<'a> = Option<(&'a [[f64; 2]], &'a [[f64; 2]])>;
+
+fn vision_mask(width: usize, height: usize, pixels: &[[f32; 3]], side: usize, points: InstancePoints<'_>) -> Result<Vec<f32>, String> {
     checked_pixels(width, height, 10_000_000)?;
     checked_pixels(side, side, 1_048_576)?;
     if pixels.len() != width.saturating_mul(height) || pixels.iter().flatten().any(|v| !v.is_finite()) {
         return Err("invalid Vision input pixels".into());
     }
     #[cfg(target_os = "macos")]
-    return native::foreground_mask(width, height, pixels, side);
+    return native::foreground_mask(width, height, pixels, side, points);
     #[cfg(not(target_os = "macos"))]
-    Err("Apple Vision is available only on macOS".into())
+    {
+        let _ = points;
+        Err("Apple Vision is available only on macOS".into())
+    }
 }
 
 fn checked_pixels(width: usize, height: usize, max: usize) -> Result<usize, String> {
@@ -310,7 +336,13 @@ mod native {
         Ok(RawImage { metadata, pixels })
     }
 
-    pub fn foreground_mask(width: usize, height: usize, pixels: &[[f32; 3]], side: usize) -> Result<Vec<f32>, String> {
+    pub fn foreground_mask(
+        width: usize,
+        height: usize,
+        pixels: &[[f32; 3]],
+        side: usize,
+        points: super::InstancePoints<'_>,
+    ) -> Result<Vec<f32>, String> {
         let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
         let path = dir.path().join("rec2020.f32");
         let output = dir.path().join("mask.f32");
@@ -321,10 +353,12 @@ mod native {
             }
         }
         file.flush().map_err(|e| e.to_string())?;
-        let _ = invoke(
-            &json!({"operation":"vision-mask", "path":path, "output":output, "width":width, "height":height, "side":side}),
-            Duration::from_secs(120),
-        )?;
+        let mut request = json!({"operation":"vision-mask", "path":path, "output":output, "width":width, "height":height, "side":side});
+        if let Some((include, exclude)) = points {
+            request["points"] = json!(include);
+            request["exclude"] = json!(exclude);
+        }
+        let _ = invoke(&request, Duration::from_secs(120))?;
         let count = checked_pixels(side, side, 1_048_576)?;
         let bytes = bounded_read(&output, count as u64 * 4)?;
         if bytes.len() != count * 4 {
@@ -368,6 +402,9 @@ mod tests {
         assert!(checked_pixels(0, 1, 100).is_err());
         assert!(foreground_mask(10, 10, &[], 512).is_err());
         assert!(foreground_mask(1, 1, &[[f32::NAN, 0.0, 0.0]], 512).is_err());
+        assert!(foreground_instances(1, 1, &[[0.0; 3]], 2, &[[f64::NAN, 0.5]], &[]).is_err());
+        assert!(foreground_instances(1, 1, &[[0.0; 3]], 2, &[[1.01, 0.5]], &[]).is_err());
+        assert!(foreground_instances(1, 1, &[[0.0; 3]], 2, &[[0.5, 0.5]; 65], &[]).is_err());
     }
 
     #[cfg(target_os = "macos")]

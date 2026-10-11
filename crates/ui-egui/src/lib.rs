@@ -650,7 +650,10 @@ impl LightcraftApp {
     /// (`then`: the AI mask to start afterwards); otherwise a toast.
     pub fn ai_error(&mut self, ctx: &egui::Context, e: impl Into<String>, then: Option<(&str, &str)>) {
         let e = e.into();
-        if lightcraft_engine::segment::Segmenter::AVAILABLE && e.starts_with(lightcraft_engine::segment::NOT_INSTALLED) {
+        if !lightcraft_engine::apple::uses_vision(&self.session)
+            && lightcraft_engine::segment::Segmenter::AVAILABLE
+            && e.starts_with(lightcraft_engine::segment::NOT_INSTALLED)
+        {
             self.offer_sam_download(then);
         } else {
             self.toast_error(ctx, e);
@@ -659,6 +662,9 @@ impl LightcraftApp {
 
     /// Open the dialog offering the SAM 3 download (never downloads by itself).
     pub fn offer_sam_download(&mut self, then: Option<(&str, &str)>) {
+        if lightcraft_engine::apple::uses_vision(&self.session) {
+            return;
+        }
         if self.ui.dialog.is_none() || matches!(self.ui.dialog, Some(state::Dialog::SamModel { .. })) {
             self.ui.dialog = Some(state::Dialog::SamModel { then: then.map(|(k, o)| (k.to_string(), o.to_string())), error: None });
         }

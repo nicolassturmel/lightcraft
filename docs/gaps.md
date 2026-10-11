@@ -12,8 +12,9 @@ Hours are Opus 5.5 agent wall-clock hours (see [target-app-parity.md](target-app
 `B` marks a gap that blocks **beta**.
 
 This macOS fork uses Photos as its main library and stores original-safe edits as metadata or
-rendered copies in Photos > LightCraft. It mitigates CR3 decoding and Subject/Background
-segmentation with Apple system APIs. Library browsing uses local Photos previews; iCloud
+rendered copies in Photos > LightCraft. It mitigates CR3 decoding and Subject/Background/Object
+segmentation with Apple system APIs. Native Object clicks need no SAM download; text-prompt
+masking is disabled because this Vision API does not support it. Library browsing uses local Photos previews; iCloud
 originals are retrieved only through each photo’s Download original button.
 See [apple-integration.md](apple-integration.md). The portable gaps and scores below remain
 open; no broader camera-coverage claim is made from one Canon R8 test.
@@ -77,7 +78,7 @@ Beta-blocking gaps (B) total **~230–430 h**; with the stability and platform w
 
 ## Revision history
 
-- 2026-10-11: Apple-service fork mitigation recorded; portable gaps retained.
+- 2026-10-11: Apple-service fork mitigation recorded; native Object masks now use Vision without SAM; unsupported text selection disabled. Portable gaps retained.
 
 | Date | Change | Summary |
 |---|---|---|

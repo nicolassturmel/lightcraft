@@ -1892,5 +1892,8 @@
   "Retry download": "Réessayer",
   "Original ready to edit": "Original prêt à retoucher",
   "Download Original from iCloud": "Télécharger l’original depuis iCloud",
-  "Photos previews only. Download each original when needed.": "Aperçus Photos uniquement. Téléchargez chaque original au besoin."
+  "Photos previews only. Download each original when needed.": "Aperçus Photos uniquement. Téléchargez chaque original au besoin.",
+  "Apple Vision · no model to install": "Apple Vision · aucun modèle à installer",
+  "Click a foreground object · ⌥-click excludes an object": "Cliquez sur un objet au premier plan · ⌥-clic exclut un objet",
+  "Text selection is unavailable with Apple Vision. Select objects by clicking the photo.": "La sélection par texte est indisponible avec Apple Vision. Sélectionnez les objets en cliquant sur la photo."
 }

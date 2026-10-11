@@ -87,6 +87,8 @@ fn resolve_ai(s: &mut Session, shape: &mut MaskShape, c: &str) -> Result<Later> 
     let background = s.segmenter.background;
     match shape {
         MaskShape::Object { seg: Some(_), .. } | MaskShape::Prompt { seg: Some(_), .. } => {}
+        MaskShape::Object { .. } if crate::apple::uses_vision(s) => {}
+        MaskShape::Prompt { .. } if crate::apple::uses_vision(s) => return Err(ai_err(crate::apple::VISION_DESCRIBE_UNSUPPORTED)),
         MaskShape::Object { hint, exclude, .. } if !hint.is_empty() && background => {
             s.segmenter.model_dir().map_err(ai_err)?;
             return Ok(Later::Clicks(std::mem::take(hint), std::mem::take(exclude)));
@@ -162,7 +164,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create New Mask",
             [],
             None,
-            "{kind: brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt, ...shape params (start/end, center/rx/ry/angle/feather, lo/hi…; object: points/exclude [[x,y],…]; prompt: text; object/prompt: seg? a stored segmentation, no model needed), name?} — AI kinds need the SAM 3 model; in the app a prompt returns {pending} and the mask appears when found",
+            "{kind: brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt, ...shape params (start/end, center/rx/ry/angle/feather, lo/hi…; object: points/exclude [[x,y],…]; prompt: text; object/prompt: seg? a stored segmentation, no model needed), name?} — real macOS photos use Apple Vision for Object/Subject/Background; text selection is unsupported there. Portable Object/Describe uses SAM 3; in the app a prompt returns {pending}",
             has_active,
             |s, p| {
                 let kind = str_param(p, "kind").unwrap_or("radial").to_string();
@@ -335,10 +337,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Object Click",
             [],
             None,
-            "{x, y: normalized image point, exclude?: bool (⌥-click: leave this part out), id?: maskId} — a click on the selected mask's Object selection (its last Object component); SAM 3 re-segments the object → {include, exclude}",
+            "{x, y: normalized image point, exclude?: bool, id?: maskId} — a click on the selected mask's last Object component. Real macOS photos use Apple Vision: click includes a foreground instance, ⌥-click excludes an instance. Portable selections use SAM 3 → {include, exclude}",
             has_active,
             |s, p| {
                 let c = "mask.objectPoint";
+                if crate::apple::uses_vision(s) {
+                    let job = crate::apple::VisionObjectClick::prepare(s, p).map_err(ai_err)?;
+                    let seg = job.run().map_err(ai_err)?;
+                    return job.accept(s, seg).map_err(ai_err);
+                }
                 let at = Point::new(super::f64_req(p, "x", c)?, super::f64_req(p, "y", c)?);
                 if !(0.0..=1.0).contains(&at.x) || !(0.0..=1.0).contains(&at.y) {
                     return Err(bad(c, "the point is outside the photo"));
@@ -407,6 +414,9 @@ pub fn specs() -> Vec<CommandSpec> {
                         .rposition(|x| matches!(x.shape, MaskShape::Object { .. } | MaskShape::Prompt { .. }))
                         .ok_or_else(|| bad(c, "the mask has no Object or Describe selection"))?,
                 };
+                if crate::apple::uses_vision(s) {
+                    return Ok(json!({"started":false, "provider":"appleVision"}));
+                }
                 let started = s.segment_detail(id, mid, k).map_err(ai_err)?;
                 Ok(json!({"started": started}))
             }
@@ -420,6 +430,9 @@ pub fn specs() -> Vec<CommandSpec> {
             has_active,
             |s, _| {
                 let c = "segment.prepare";
+                if crate::apple::uses_vision(s) {
+                    return Ok(json!({"busy":false, "provider":"appleVision", "requiresDownload":false}));
+                }
                 let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
                 s.segment_prepare(id).map_err(ai_err)?;
                 Ok(json!({"busy": s.segmenter.busy()}))
@@ -433,6 +446,11 @@ pub fn specs() -> Vec<CommandSpec> {
             "{} — whether this build has AI masks, whether the SAM 3 model is installed (and where), loaded, busy, and the download's progress → {available, installed, dir, loaded, busy, analyzing, sizeBytes, license, licenseUrl, mirrors, download: {running, done, total, file, error, finished}}",
             super::always,
             |s, _| {
+                if crate::apple::uses_vision(s) {
+                    return Ok(json!({"available":true, "provider":"appleVision", "requiresDownload":false,
+                        "installed":true, "dir":null, "remote":null, "loaded":false, "busy":false, "analyzing":false,
+                        "sizeBytes":0, "mirrors":0, "download":{"running":false}}));
+                }
                 let g = &s.segmenter;
                 Ok(json!({
                     "available": crate::segment::Segmenter::AVAILABLE,
@@ -459,6 +477,9 @@ pub fn specs() -> Vec<CommandSpec> {
             super::always,
             |s, p| {
                 let c = "segment.model.download";
+                if crate::apple::uses_vision(s) {
+                    return Err(ai_err("Apple Vision is built into macOS. No SAM model is required for masks."));
+                }
                 if p.get("acknowledged").and_then(Value::as_bool) != Some(true) {
                     return Err(bad(
                         c,

@@ -5,6 +5,7 @@ use crate::{
 };
 use lightcraft_catalog::{Album, AlbumId, Catalog, ColorLabel, Flag, HistoryStep, MediaKind, Meta, Op, Photo, PhotoId, Source, Version};
 use lightcraft_develop::{DevelopSettings, MaskShape, SegMask};
+use lightcraft_geom::Point;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -692,17 +693,28 @@ pub fn apply_recipe(s: &mut Session, recipe: &Value) -> crate::Result<Value> {
     Ok(json!({"id":id.0, "originalUnchanged":true}))
 }
 
-/// Demo photos keep their procedural selections; real macOS photos use Vision by default.
-pub fn wants_vision(session: &Session, params: &Value) -> bool {
+pub const VISION_DESCRIBE_UNSUPPORTED: &str = "Apple Vision does not support masks from text descriptions. Use Object, Subject, Background or Brush.";
+
+/// Real macOS libraries use the system mask provider, without preparing or downloading SAM.
+/// Procedural demo sessions keep the portable mask paths for cross-platform UI tests.
+pub fn uses_vision(session: &Session) -> bool {
     cfg!(target_os = "macos")
-        && matches!(params.get("kind").and_then(Value::as_str), Some("subject" | "background"))
-        && params.get("seg").is_none()
-        && params.get("provider").and_then(Value::as_str) != Some("heuristic")
-        && (params.get("provider").and_then(Value::as_str) == Some("apple")
+        && (session.apple_library.is_some()
             || session
                 .active()
                 .and_then(|id| session.catalog.photo(id))
-                .is_some_and(|p| matches!(p.source, lightcraft_catalog::Source::File { .. } | lightcraft_catalog::Source::ApplePhotos { .. })))
+                .is_some_and(|p| matches!(p.source, Source::File { .. } | Source::ApplePhotos { .. })))
+}
+
+/// Whether creation needs asynchronous Vision work. An empty Object selection waits for clicks.
+pub fn wants_vision(session: &Session, params: &Value) -> bool {
+    cfg!(target_os = "macos")
+        && (matches!(params.get("kind").and_then(Value::as_str), Some("subject" | "background"))
+            || (params.get("kind").and_then(Value::as_str) == Some("object")
+                && params.get("points").and_then(Value::as_array).is_some_and(|points| !points.is_empty())))
+        && params.get("seg").is_none()
+        && params.get("provider").and_then(Value::as_str) != Some("heuristic")
+        && (params.get("provider").and_then(Value::as_str) == Some("apple") || uses_vision(session))
 }
 
 pub fn vision_source(session: &mut Session) -> Result<SourceRef, String> {
@@ -712,16 +724,31 @@ pub fn vision_source(session: &mut Session) -> Result<SourceRef, String> {
 }
 
 pub fn vision_selection(source: SourceRef) -> Result<SegMask, String> {
+    vision_mask(source, None)
+}
+
+pub fn vision_object_selection(source: SourceRef, include: &[Point], exclude: &[Point]) -> Result<SegMask, String> {
+    vision_mask(source, Some((include, exclude)))
+}
+
+fn vision_mask(source: SourceRef, points: Option<(&[Point], &[Point])>) -> Result<SegMask, String> {
     #[cfg(target_os = "macos")]
     {
         let image = source.load()?;
         let image = lightcraft_raster::resample::fit(&image, 2048, 2048, lightcraft_raster::resample::Filter::Box);
-        let coverage = lightcraft_apple::foreground_mask(image.width, image.height, &image.data, 512)?;
+        let coverage = match points {
+            None => lightcraft_apple::foreground_mask(image.width, image.height, &image.data, 512)?,
+            Some((include, exclude)) => {
+                let include: Vec<_> = include.iter().map(|p| [p.x, p.y]).collect();
+                let exclude: Vec<_> = exclude.iter().map(|p| [p.x, p.y]).collect();
+                lightcraft_apple::foreground_instances(image.width, image.height, &image.data, 512, &include, &exclude)?
+            }
+        };
         coverage_to_seg(512, &coverage)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = source;
+        let _ = (source, points);
         Err("Apple Vision is available only on macOS".into())
     }
 }
@@ -743,10 +770,88 @@ pub fn coverage_to_seg(side: usize, coverage: &[f32]) -> Result<SegMask, String>
 
 pub fn resolve_vision(session: &mut Session, params: &Value, shape: &mut MaskShape) -> Result<(), String> {
     if wants_vision(session, params) {
-        let seg = vision_selection(vision_source(session)?)?;
-        *shape = MaskShape::Vision { background: params.get("kind").and_then(Value::as_str) == Some("background"), seg, edge: 0.0 };
+        let source = vision_source(session)?;
+        if let MaskShape::Object { hint, exclude, seg, .. } = shape {
+            *seg = Some(vision_object_selection(source, hint, exclude)?);
+        } else {
+            let seg = vision_selection(source)?;
+            *shape = MaskShape::Vision { background: params.get("kind").and_then(Value::as_str) == Some("background"), seg, edge: 0.0 };
+        }
     }
     Ok(())
+}
+
+/// A click's immutable target. Results must not overwrite a changed photo, mask, undo or library.
+pub struct VisionObjectClick {
+    source: SourceRef,
+    photo: PhotoId,
+    generation: u64,
+    content: String,
+    mask: u32,
+    component: usize,
+    before: Arc<DevelopSettings>,
+    hint: Vec<Point>,
+    exclude: Vec<Point>,
+    edge: f64,
+}
+
+impl VisionObjectClick {
+    pub fn prepare(session: &mut Session, params: &Value) -> Result<Self, String> {
+        let coordinate = |key| params.get(key).and_then(Value::as_f64).filter(|v| v.is_finite() && (0.0..=1.0).contains(v));
+        let at = Point::new(
+            coordinate("x").ok_or("Object click x must be within the photo")?,
+            coordinate("y").ok_or("Object click y must be within the photo")?,
+        );
+        let photo = session.active().ok_or("no active photo")?;
+        let mask = match params.get("id") {
+            Some(id) => id.as_u64().and_then(|id| u32::try_from(id).ok()).ok_or("invalid mask id")?,
+            None => session.active_mask.ok_or("no mask selected")?,
+        };
+        let before = session.develop_of(photo).ok_or("no active photo settings")?;
+        let selected = before.masks.iter().find(|m| m.id == mask).ok_or("the selected mask no longer exists")?;
+        let component = selected
+            .components
+            .iter()
+            .rposition(|c| matches!(c.shape, MaskShape::Object { .. }))
+            .ok_or("the mask has no Object selection (add one first)")?;
+        let Some(MaskShape::Object { hint, exclude, edge, .. }) = selected.components.get(component).map(|c| &c.shape) else {
+            return Err("not an Object component".into());
+        };
+        if hint.len().saturating_add(exclude.len()) >= crate::segment::MAX_CLICKS {
+            return Err(format!("an Object selection takes at most {} clicks; start a new one", crate::segment::MAX_CLICKS));
+        }
+        let (mut hint, mut exclude, edge) = (hint.clone(), exclude.clone(), *edge);
+        if params.get("exclude").and_then(Value::as_bool).unwrap_or(false) {
+            exclude.push(at)
+        } else {
+            hint.push(at)
+        }
+        let source = vision_source(session)?;
+        let content = crate::media::content_key(session.catalog.photo(photo).ok_or("no such photo")?);
+        Ok(Self { source, photo, generation: session.library_generation(), content, mask, component, before, hint, exclude, edge })
+    }
+
+    pub fn run(&self) -> Result<Option<SegMask>, String> {
+        if self.hint.is_empty() { Ok(None) } else { vision_object_selection(self.source.clone(), &self.hint, &self.exclude).map(Some) }
+    }
+
+    pub fn accept(self, session: &mut Session, seg: Option<SegMask>) -> Result<Value, String> {
+        let current = session.catalog.photo(self.photo).map(|p| crate::media::content_key(p));
+        if session.library_generation() != self.generation
+            || session.active() != Some(self.photo)
+            || current.as_ref() != Some(&self.content)
+            || !session.develop_of(self.photo).is_some_and(|d| Arc::ptr_eq(&d, &self.before))
+        {
+            return Err("Apple Vision selection discarded because the photo or mask changed".into());
+        }
+        if seg.as_ref().is_some_and(|s| s.logits().is_none()) || (!self.hint.is_empty() && seg.is_none()) {
+            return Err("invalid Apple Vision object mask".into());
+        }
+        let out = json!({"include":self.hint.len(), "exclude":self.exclude.len(), "provider":"appleVision"});
+        let shape = MaskShape::Object { hint: self.hint, exclude: self.exclude, seg, detail: vec![], edge: self.edge };
+        session.execute("mask.update", &json!({"id":self.mask, "component":self.component, "shape":shape})).map_err(|e| e.to_string())?;
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -983,6 +1088,113 @@ mod tests {
         assert!(logits[0] < -10.0 && logits[1] < 0.0 && logits[2] > 0.0 && logits[3] > 10.0);
         assert!(coverage_to_seg(0, &[]).is_err());
         assert!(coverage_to_seg(2, &[f32::NAN; 4]).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn photos_object_masks_never_prepare_or_download_sam() {
+        let mut s = photos_session();
+        s.segmenter.background = true;
+        s.segmenter.dir = Some(PathBuf::from("/nonexistent/lightcraft-apple-no-sam"));
+        assert!(uses_vision(&s));
+        for kind in ["subject", "background"] {
+            assert!(wants_vision(&s, &json!({"kind":kind})));
+        }
+        assert!(!wants_vision(&s, &json!({"kind":"object"})), "empty Object waits for clicks without loading a model");
+        s.execute("mask.add", &json!({"kind":"object"})).unwrap();
+        for op in ["add", "subtract", "intersect"] {
+            s.execute("mask.addComponent", &json!({"kind":"object", "op":op})).unwrap();
+        }
+        assert!(!s.segmenter.busy() && !s.segmenter.loaded());
+        assert!(s.segmenter.pending_clicks().is_none());
+        assert!(!s.segmenter.download_status().running);
+        assert_eq!(s.execute("segment.prepare", &json!({})).unwrap()["provider"], "appleVision");
+        assert_eq!(s.execute("mask.refineDetail", &json!({})).unwrap()["started"], false);
+        let status = s.execute("segment.model.status", &json!({})).unwrap();
+        assert_eq!(status["provider"], "appleVision");
+        assert_eq!(status["requiresDownload"], false);
+        assert!(s.execute("segment.model.download", &json!({"acknowledged":true})).unwrap_err().to_string().contains("Apple Vision"));
+        let before = s.develop_of(s.active().unwrap()).unwrap();
+        let e = s.execute("mask.add", &json!({"kind":"prompt", "text":"a car"})).unwrap_err().to_string();
+        assert_eq!(e, VISION_DESCRIBE_UNSUPPORTED);
+        assert_eq!(s.develop_of(s.active().unwrap()).unwrap(), before);
+        // Existing stored semantic masks remain renderable without recomputation or a model.
+        let seg = coverage_to_seg(2, &[1.0, 0.0, 1.0, 0.0]).unwrap();
+        s.execute("mask.add", &json!({"kind":"prompt", "text":"saved car", "seg":seg})).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn vision_object_clicks_store_masks_and_reject_stale_results() {
+        let selection = || Some(coverage_to_seg(2, &[1.0, 0.0, 1.0, 0.0]).unwrap());
+        let setup = || {
+            let mut s = photos_session();
+            s.execute("mask.add", &json!({"kind":"object"})).unwrap();
+            s
+        };
+        let mut s = setup();
+        let id = s.active().unwrap();
+        let original = s.catalog.photo(id).unwrap().source.clone();
+        let job = VisionObjectClick::prepare(&mut s, &json!({"x":0.2, "y":0.5})).unwrap();
+        assert!(matches!(job.source, SourceRef::ApplePhotos { network: false, .. }));
+        let out = job.accept(&mut s, selection()).unwrap();
+        assert_eq!(out, json!({"include":1, "exclude":0, "provider":"appleVision"}));
+        let shape = &s.develop_of(id).unwrap().masks[0].components[0].shape;
+        let stored: MaskShape = serde_json::from_value(serde_json::to_value(shape).unwrap()).unwrap();
+        assert_eq!(&stored, shape);
+        assert!(matches!(stored, MaskShape::Object { seg: Some(_), .. }));
+        assert_eq!(s.catalog.photo(id).unwrap().source, original);
+        assert!(VisionObjectClick::prepare(&mut s, &json!({"x":-0.1, "y":0.5})).is_err());
+        assert!(VisionObjectClick::prepare(&mut s, &json!({"x":0.5, "y":0.5, "id":u64::MAX})).is_err());
+
+        for change in 0..5 {
+            let mut s = setup();
+            let job = VisionObjectClick::prepare(&mut s, &json!({"x":0.2, "y":0.5})).unwrap();
+            match change {
+                0 => {
+                    s.execute("mask.delete", &json!({})).unwrap();
+                    s.execute("mask.add", &json!({"kind":"object"})).unwrap();
+                }
+                1 => {
+                    s.execute("edit.undo", &json!({})).unwrap();
+                }
+                2 => {
+                    s.selection = Selection::default();
+                }
+                3 => {
+                    let mut changed = projected(&["a", "b"], None);
+                    changed.snapshot.assets[0].revision = "replaced-original".into();
+                    s.apply_photos_snapshot(changed).unwrap();
+                }
+                _ => {
+                    s = s.with_apple_photos(None);
+                    s.apply_photos_snapshot(projected(&["a", "b"], None)).unwrap();
+                }
+            }
+            let revision = s.catalog.revision;
+            assert!(job.accept(&mut s, selection()).unwrap_err().contains("discarded"), "change {change}");
+            assert_eq!(s.catalog.revision, revision, "stale result must not write an adjustment");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn canon_r8_vision_object_selection_and_exclusion_use_system_inference() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/raw/cr3-canon-r8-craw.cr3");
+        let Ok(bytes) = std::fs::read(path) else { return };
+        let (image, _) = crate::files::load_bytes(&bytes, 1000).unwrap();
+        let side = 128;
+        let foreground = lightcraft_apple::foreground_mask(image.width, image.height, &image.data, side).unwrap();
+        let (at, value) = foreground.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap();
+        assert!(*value > 0.9, "the CC0 fixture contains a foreground subject");
+        let point = [(at % side) as f64 / side as f64, (at / side) as f64 / side as f64];
+        let object = lightcraft_apple::foreground_instances(image.width, image.height, &image.data, side, &[point], &[]).unwrap();
+        assert!(object[at] > 0.8, "click and coverage must have the same orientation");
+        let excluded = lightcraft_apple::foreground_instances(image.width, image.height, &image.data, side, &[point], &[point]).unwrap();
+        assert!(excluded.iter().all(|v| *v == 0.0), "removing the only selected instance must not select all instances");
+        let background = foreground.iter().position(|v| *v < 0.01).unwrap();
+        let background = [(background % side) as f64 / side as f64, (background / side) as f64 / side as f64];
+        assert!(lightcraft_apple::foreground_instances(image.width, image.height, &image.data, side, &[background], &[]).is_err());
     }
 
     #[cfg(target_os = "macos")]

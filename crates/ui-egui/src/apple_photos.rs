@@ -29,6 +29,7 @@ pub fn intercept(app: &mut LightcraftApp, id: &str, params: &Value) -> Option<Re
         "photo.reopenApplePhotosRecipe" => Some(start_recipe(app)),
         "library.importIntoApplePhotos" => Some(start_import(app, params)),
         "mask.add" | "mask.addComponent" if lightcraft_engine::apple::wants_vision(&app.session, params) => Some(start_mask(app, id, params)),
+        "mask.objectPoint" if lightcraft_engine::apple::uses_vision(&app.session) => Some(start_object_click(app, params)),
         _ => None,
     }
 }
@@ -313,14 +314,37 @@ pub(crate) fn empty_library_message(app: &LightcraftApp) -> Option<(&'static str
 
 fn start_mask(app: &mut LightcraftApp, command: &str, params: &Value) -> Result<Value, String> {
     if app.tasks.is_running(MASK) {
-        return Err("Apple Vision is already selecting a subject".into());
+        return Err("Apple Vision is selecting. Wait for the selection to finish.".into());
     }
     let source = lightcraft_engine::apple::vision_source(&mut app.session)?;
     let photo = app.session.active().ok_or("no active photo")?;
     let generation = app.session.library_generation();
     let content = app.session.catalog.photo(photo).map(|p| lightcraft_engine::media::content_key(p)).ok_or("no such photo")?;
+    let before = app.session.develop_of(photo).ok_or("no active photo settings")?;
     let command = command.to_string();
     let mut params = params.clone();
+    let object = params.get("kind").and_then(Value::as_str) == Some("object");
+    let points = |key| -> Result<Vec<lightcraft_geom::Point>, String> {
+        let Some(array) = params.get(key) else { return Ok(vec![]) };
+        let array = array
+            .as_array()
+            .filter(|a| a.len() <= lightcraft_engine::segment::MAX_CLICKS)
+            .ok_or("Object clicks must be at most 64 normalized point pairs")?;
+        array
+            .iter()
+            .map(|p| {
+                let coordinate = |key| p.get(key).and_then(Value::as_f64).filter(|v| v.is_finite() && (0.0..=1.0).contains(v));
+                let x = coordinate(0).ok_or("invalid Object click x")?;
+                let y = coordinate(1).ok_or("invalid Object click y")?;
+                Ok(lightcraft_geom::Point::new(x, y))
+            })
+            .collect()
+    };
+    let include = if object { points("points")? } else { vec![] };
+    let exclude = if object { points("exclude")? } else { vec![] };
+    if include.len().saturating_add(exclude.len()) > lightcraft_engine::segment::MAX_CLICKS {
+        return Err("an Object selection takes at most 64 clicks".into());
+    }
     if command == "mask.addComponent" && params.get("id").is_none() {
         params["id"] = json!(app.session.active_mask);
     }
@@ -328,11 +352,21 @@ fn start_mask(app: &mut LightcraftApp, command: &str, params: &Value) -> Result<
         app,
         MASK,
         Some("appleVision"),
-        move || lightcraft_engine::apple::vision_selection(source),
+        move || {
+            if object {
+                lightcraft_engine::apple::vision_object_selection(source, &include, &exclude)
+            } else {
+                lightcraft_engine::apple::vision_selection(source)
+            }
+        },
         move |app, ctx, result| {
             let current = app.session.catalog.photo(photo).map(|p| lightcraft_engine::media::content_key(p));
-            if generation != app.session.library_generation() || app.session.active() != Some(photo) || current.as_ref() != Some(&content) {
-                app.toast(ctx, "Apple Vision selection discarded because the active photo changed");
+            if generation != app.session.library_generation()
+                || app.session.active() != Some(photo)
+                || current.as_ref() != Some(&content)
+                || !app.session.develop_of(photo).is_some_and(|d| std::sync::Arc::ptr_eq(&d, &before))
+            {
+                app.toast(ctx, "Apple Vision selection discarded because the photo or mask changed");
                 return;
             }
             let result = result.and_then(|seg| {
@@ -343,6 +377,30 @@ fn start_mask(app: &mut LightcraftApp, command: &str, params: &Value) -> Result<
                 Ok(_) => app.toast(ctx, "Apple Vision mask added"),
                 Err(error) => app.toast_error(ctx, error),
             }
+        },
+    )?;
+    Ok(json!({"pending":true, "provider":"appleVision"}))
+}
+
+fn start_object_click(app: &mut LightcraftApp, params: &Value) -> Result<Value, String> {
+    if app.tasks.is_running(MASK) {
+        return Err("Apple Vision is selecting. Wait for the selection to finish.".into());
+    }
+    let job = lightcraft_engine::apple::VisionObjectClick::prepare(&mut app.session, params)?;
+    crate::tasks::spawn(
+        app,
+        MASK,
+        Some("appleVision"),
+        move || {
+            let result = job.run();
+            (job, result)
+        },
+        move |app, ctx, (job, result)| match result.and_then(|seg| job.accept(&mut app.session, seg)) {
+            Ok(_) => {
+                app.ui.detail_due = None;
+                app.toast(ctx, "Apple Vision mask updated");
+            }
+            Err(error) => app.toast_error(ctx, error),
         },
     )?;
     Ok(json!({"pending":true, "provider":"appleVision"}))
@@ -402,6 +460,70 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn photos_mask_tiles_use_vision_without_a_sam_download_dialog() {
+        use lightcraft_engine::{
+            Selection,
+            catalog::{Op, Photo, Source},
+            media::SourceLevel,
+        };
+        use std::{sync::Arc, time::Duration};
+        let mut session = lightcraft_engine::Session::new().with_apple_photos(None);
+        let id = PhotoId(1);
+        let photo = Photo::new(
+            id,
+            Source::ApplePhotos { asset: "test-mask".into(), revision: "r1".into() },
+            "example.CR3",
+            "CR3",
+            8,
+            6,
+            "2026-10-11T12:00:00Z",
+        );
+        session.catalog.apply(Op::AddPhoto { photo: Box::new(photo) }).unwrap();
+        let image = Arc::new(lightcraft_raster::Rgb32f { width: 8, height: 6, data: vec![[0.1, 0.2, 0.3]; 48] });
+        for level in [SourceLevel::Thumb, SourceLevel::Preview] {
+            session.media.insert(id, level, image.clone());
+        }
+        session.selection = Selection::single(id);
+        session.apple_library.as_mut().unwrap().loaded = true;
+        session.segmenter.dir = Some(std::env::temp_dir().join("lightcraft-apple-ui-no-sam"));
+        let mut app = LightcraftApp::new(session, crate::Services::default());
+        app.ui.settings.gpu = false;
+        app.apple_photos.attempted = true;
+        app.ui.view = crate::state::ViewMode::Detail;
+        app.ui.right = crate::state::RightPanel::Masking;
+        let mut host = crate::headless::Headless::new(app, [1200.0, 800.0], 1.0);
+        let t = Duration::from_secs(15);
+        for _ in 0..4 {
+            host.step();
+        }
+        let r = host.request("ui.clickWidget", json!({"id":"maskNew:object"}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(host.app.ui.tool, "object");
+        assert_eq!(host.app.ui.dialog, None, "native Object must never offer SAM");
+        assert_eq!(host.app.session.develop_of(id).unwrap().masks.len(), 1);
+        assert!(!host.app.session.segmenter.busy() && !host.app.session.segmenter.loaded());
+        assert!(!host.app.session.segmenter.download_status().running);
+        host.request("ui.clickWidget", json!({"id":"maskNew:prompt"}), t);
+        assert_eq!(host.app.ui.dialog, None);
+        assert_eq!(host.app.ui.describe, None, "unsupported native text selection stays disabled");
+        let main = host.view.ctx.clone();
+        host.app.headless_screenshot(&main, false);
+        let text = host.app.shadow.as_ref().unwrap().painted_text().join("\n");
+        assert!(text.contains("Apple Vision"));
+        assert!(!text.contains("SAM 3"));
+        for op in ["add", "subtract", "intersect"] {
+            crate::panels::masking::start_object(&mut host.app, &main, op);
+            assert_eq!(host.app.ui.dialog, None);
+        }
+        host.app.ai_error(&main, lightcraft_engine::segment::NOT_INSTALLED, Some(("object", "new")));
+        assert_eq!(host.app.ui.dialog, None, "error fallback must not reopen the SAM dialog");
+        host.app.offer_sam_download(None);
+        assert_eq!(host.app.ui.dialog, None);
+        assert!(host.app.tasks.is_empty(), "starting the empty selection needs no worker or model");
+    }
 
     #[test]
     fn photos_library_controls_are_visible_in_the_main_sidebar_without_requesting_access() {

@@ -39,6 +39,8 @@ struct Request: Decodable {
     var network: Bool?
     var asset: String?
     var recipe: String?
+    var points: [[Double]]?
+    var exclude: [[Double]]?
 }
 
 func required(_ value: String?, _ name: String) throws -> String {
@@ -384,6 +386,55 @@ func raw(_ request: Request) throws -> [String: Any] {
 }
 
 @available(macOS 14.0, *)
+func selectedInstances(_ observation: VNInstanceMaskObservation, _ request: Request) throws -> IndexSet {
+    guard let points = request.points else { return observation.allInstances }
+    let exclude = request.exclude ?? []
+    guard points.count + exclude.count <= 64,
+          (points + exclude).allSatisfy({ $0.count == 2 && $0.allSatisfy({ $0.isFinite && (0...1).contains($0) }) }) else {
+        throw BridgeError("Invalid Apple Vision object clicks")
+    }
+    let labels = observation.instanceMask
+    let width = CVPixelBufferGetWidth(labels), height = CVPixelBufferGetHeight(labels)
+    _ = try checkedDimensions(width, height, limit: 10_000_000)
+    let format = CVPixelBufferGetPixelFormatType(labels)
+    let componentSize: Int
+    switch format {
+    case kCVPixelFormatType_OneComponent8: componentSize = 1
+    case kCVPixelFormatType_OneComponent32Float: componentSize = 4
+    default: throw BridgeError("Unsupported Apple Vision instance label format")
+    }
+    let stride = CVPixelBufferGetBytesPerRow(labels)
+    guard !CVPixelBufferIsPlanar(labels), stride >= width * componentSize,
+          CVPixelBufferLockBaseAddress(labels, .readOnly) == kCVReturnSuccess else {
+        throw BridgeError("Cannot read Apple Vision instance labels")
+    }
+    defer { CVPixelBufferUnlockBaseAddress(labels, .readOnly) }
+    guard let address = CVPixelBufferGetBaseAddress(labels) else { throw BridgeError("Missing Apple Vision instance labels") }
+    func instance(_ point: [Double]) throws -> Int {
+        // Pixel-buffer rows and LightCraft's image coordinates both start at the top left.
+        let x = min(width - 1, Int(point[0] * Double(width)))
+        let y = min(height - 1, Int(point[1] * Double(height)))
+        let offset = y * stride + x * componentSize
+        let value = componentSize == 1 ? Float(address.load(fromByteOffset: offset, as: UInt8.self))
+            : address.load(fromByteOffset: offset, as: Float.self)
+        guard value.isFinite, value >= 0, value <= 255, value.rounded() == value else {
+            throw BridgeError("Invalid Apple Vision instance label")
+        }
+        return Int(value)
+    }
+    var selected = IndexSet()
+    for point in points {
+        let label = try instance(point)
+        guard label != 0, observation.allInstances.contains(label) else {
+            throw BridgeError("Apple Vision found no foreground object at this point. Click a foreground subject or use Brush.")
+        }
+        selected.insert(label)
+    }
+    for point in exclude { selected.remove(try instance(point)) }
+    return selected
+}
+
+@available(macOS 14.0, *)
 func foregroundMask(_ request: Request) throws -> [String: Any] {
     let width = request.width ?? 0, height = request.height ?? 0, side = request.side ?? 512
     let count = try checkedDimensions(width, height, limit: 10_000_000)
@@ -399,14 +450,19 @@ func foregroundMask(_ request: Request) throws -> [String: Any] {
     guard let observation = requestMask.results?.first, !observation.allInstances.isEmpty else {
         throw BridgeError("Apple Vision found no foreground subject in this photo")
     }
-    let buffer = try observation.generateScaledMaskForImage(forInstances: observation.allInstances, from: handler)
-    let mask = CIImage(cvPixelBuffer: buffer)
-    let scaled = mask.transformed(by: CGAffineTransform(scaleX: CGFloat(side) / mask.extent.width, y: CGFloat(side) / mask.extent.height))
-    let context = CIContext(options: [.cacheIntermediates: false])
+    let selected = try selectedInstances(observation, request)
     var coverage = [Float](repeating: 0, count: side * side)
-    coverage.withUnsafeMutableBytes { bytes in
-        if let address = bytes.baseAddress {
-            context.render(scaled, toBitmap: address, rowBytes: side * 4, bounds: CGRect(x: 0, y: 0, width: side, height: side), format: .Rf, colorSpace: nil)
+    // Vision's empty IndexSet means all instances. Explicitly retain zero coverage when the
+    // user removed every object instead of accidentally selecting all of them again.
+    if !selected.isEmpty {
+        let buffer = try observation.generateScaledMaskForImage(forInstances: selected, from: handler)
+        let mask = CIImage(cvPixelBuffer: buffer)
+        let scaled = mask.transformed(by: CGAffineTransform(scaleX: CGFloat(side) / mask.extent.width, y: CGFloat(side) / mask.extent.height))
+        let context = CIContext(options: [.cacheIntermediates: false])
+        coverage.withUnsafeMutableBytes { bytes in
+            if let address = bytes.baseAddress {
+                context.render(scaled, toBitmap: address, rowBytes: side * 4, bounds: CGRect(x: 0, y: 0, width: side, height: side), format: .Rf, colorSpace: nil)
+            }
         }
     }
     try coverage.withUnsafeBytes { bytes in

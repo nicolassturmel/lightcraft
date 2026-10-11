@@ -91,9 +91,13 @@ fn tile_layout(width: f32, label: impl Fn(f32) -> f32) -> (usize, f32, f32) {
 pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     let t = Tokens::get(ui.ctx());
     let d = app.session.develop_of(id).unwrap_or_default();
+    let native = lightcraft_engine::apple::uses_vision(&app.session);
     header(ui, "Masking");
     egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 0, bottom: 10 }).show(ui, |ui| {
         ui.label(egui::RichText::new(crate::i18n::tr("Create New Mask")).color(t.text_dim));
+        if native {
+            ui.small(crate::i18n::tr("Apple Vision · no model to install"));
+        }
         ui.add_space(6.0);
         let tiles: [(&str, &str, Icon); 10] = [
             ("object", "Object", Icon::Subject),
@@ -118,19 +122,26 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         let (cols, tile, size) = tile_layout(ui.available_width(), widest);
         egui::Grid::new("mask-tiles").spacing(vec2(TILE_GAP, TILE_GAP)).show(ui, |ui| {
             for (i, (kind, label, icon)) in tiles.iter().enumerate() {
-                let (r, resp) = ui.allocate_exact_size(vec2(tile, 52.0), Sense::click());
+                let enabled = !native || *kind != "prompt";
+                let (r, resp) = ui.allocate_exact_size(vec2(tile, 52.0), if enabled { Sense::click() } else { Sense::hover() });
                 register(ui.ctx(), format!("maskNew:{kind}"), r);
-                ui.painter().rect_filled(r, 4.0, if resp.hovered() { t.hover } else { t.inset });
-                paint(ui.painter(), Rect::from_center_size(r.center() - vec2(0.0, 7.0), vec2(20.0, 20.0)), *icon, t.text_label);
+                ui.painter().rect_filled(r, 4.0, if enabled && resp.hovered() { t.hover } else { t.inset });
+                let color = if enabled { t.text_label } else { t.text_dim.gamma_multiply(0.45) };
+                paint(ui.painter(), Rect::from_center_size(r.center() - vec2(0.0, 7.0), vec2(20.0, 20.0)), *icon, color);
                 // (cut short only in a panel too narrow for the label: the full name on hover)
                 let label = crate::i18n::tr(label);
                 let g = one_line(ui.painter(), label, t.font(size), t.text_dim, tile - 2.0 * TILE_PAD);
                 let elided = g.elided;
                 let at = pos2(r.center().x, r.bottom() - 9.0) - g.size() / 2.0;
                 register(ui.ctx(), format!("maskNewLabel:{kind}"), Rect::from_min_size(at, g.size()));
-                ui.painter().galley(at, g, t.text_dim);
+                ui.painter().galley(at, g, if enabled { t.text_dim } else { color });
                 let resp = if elided { resp.on_hover_text(label) } else { resp };
-                if resp.clicked() {
+                let resp = if enabled {
+                    resp
+                } else {
+                    resp.on_hover_text(crate::i18n::tr("Text selection is unavailable with Apple Vision. Select objects by clicking the photo."))
+                };
+                if enabled && resp.clicked() {
                     match *kind {
                         "colorRange" => {
                             // an empty colour range; clicking the photo samples it
@@ -675,6 +686,9 @@ fn component_row_menu(app: &mut LightcraftApp, ui: &mut egui::Ui, mask: u32, k: 
 /// Whether the SAM 3 model is missing in a build that could use it: then the download is
 /// offered (with `then` to start afterwards) instead of starting an AI mask.
 fn needs_model(app: &mut LightcraftApp, kind: &str, op: &str) -> bool {
+    if lightcraft_engine::apple::uses_vision(&app.session) {
+        return false;
+    }
     let seg = &app.session.segmenter;
     let missing = lightcraft_engine::segment::Segmenter::AVAILABLE && seg.remote_endpoint().is_none() && seg.dir.is_some() && !seg.installed();
     if missing {
@@ -683,7 +697,7 @@ fn needs_model(app: &mut LightcraftApp, kind: &str, op: &str) -> bool {
     missing
 }
 
-/// Start an Object selection (SAM 3 clicks): a new mask, or a component of the selected one
+/// Start an Object selection (Apple Vision on macOS, SAM 3 elsewhere): a new mask, or a component of the selected one
 /// combined by `op`; the photo is analyzed meanwhile (in the background).
 pub(crate) fn start_object(app: &mut LightcraftApp, ctx: &egui::Context, op: &str) {
     if needs_model(app, "object", op) {
@@ -694,7 +708,12 @@ pub(crate) fn start_object(app: &mut LightcraftApp, ctx: &egui::Context, op: &st
     match r {
         Ok(_) => {
             app.ui.tool = "object".into();
-            app.toast(ctx, crate::i18n::tr("Click the object to select it · ⌥-click leaves a part out"));
+            let hint = if lightcraft_engine::apple::uses_vision(&app.session) {
+                "Click a foreground object · ⌥-click excludes an object"
+            } else {
+                "Click the object to select it · ⌥-click leaves a part out"
+            };
+            app.toast(ctx, crate::i18n::tr(hint));
         }
         Err(e) => app.ai_error(ctx, e, Some(("object", op))),
     }
@@ -714,6 +733,9 @@ pub(crate) fn begin_ai(app: &mut LightcraftApp, kind: &str, op: &str) -> Result<
             Ok(r)
         }
         _ => {
+            if lightcraft_engine::apple::uses_vision(&app.session) {
+                return Err(lightcraft_engine::apple::VISION_DESCRIBE_UNSUPPORTED.into());
+            }
             app.ui.describe = Some((op.to_string(), String::new()));
             Ok(serde_json::Value::Null)
         }
@@ -722,6 +744,10 @@ pub(crate) fn begin_ai(app: &mut LightcraftApp, kind: &str, op: &str) -> Result<
 
 /// Open the Describe field (a new mask, or a component combined by `op`).
 pub(crate) fn start_describe(app: &mut LightcraftApp, op: &str) {
+    if lightcraft_engine::apple::uses_vision(&app.session) {
+        app.ui.describe = None;
+        return;
+    }
     if needs_model(app, "prompt", op) {
         return;
     }
@@ -730,6 +756,10 @@ pub(crate) fn start_describe(app: &mut LightcraftApp, op: &str) {
 
 /// The Describe field: type what to select ("sky", "the red car") and press Return.
 fn describe_field(app: &mut LightcraftApp, ui: &mut egui::Ui, new_mask: bool) {
+    if lightcraft_engine::apple::uses_vision(&app.session) {
+        app.ui.describe = None;
+        return;
+    }
     let Some((op, mut text)) = app.ui.describe.clone() else { return };
     // a new mask's field sits under the tiles; one that combines, under the selected mask
     if (op == "new") != new_mask {
@@ -786,7 +816,9 @@ fn component_menu(app: &mut LightcraftApp, ui: &mut egui::Ui, op: &str) {
     if b.clicked() {
         start_object(app, ui.ctx(), op);
     }
-    let b = ui.button(crate::i18n::tr("Describe…"));
+    let b = ui
+        .add_enabled(!lightcraft_engine::apple::uses_vision(&app.session), egui::Button::new(crate::i18n::tr("Describe…")))
+        .on_disabled_hover_text(crate::i18n::tr("Text selection is unavailable with Apple Vision. Select objects by clicking the photo."));
     register(ui.ctx(), format!("maskComp:{op}:prompt"), b.rect);
     if b.clicked() {
         start_describe(app, op);

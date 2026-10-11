@@ -888,7 +888,7 @@ pub enum MaskShape {
         #[serde(default, skip_serializing_if = "is_zero")]
         edge: f64,
     },
-    /// One object picked by clicks (SAM 3 point prompts): `hint` holds the clicks that include,
+    /// Objects picked by clicks (Apple Vision instances on macOS, SAM 3 elsewhere): `hint` holds the clicks that include,
     /// `exclude` the ones that exclude; `seg` the segmentation computed from them.
     Object {
         hint: Vec<Point>,
