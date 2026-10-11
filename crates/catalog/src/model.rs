@@ -91,6 +91,12 @@ pub enum Source {
     File { path: String },
     /// A procedurally generated demo scene (by `lightcraft-scenes` id).
     Demo { scene: u32 },
+    /// An image owned by the System Photo Library, addressed through public PhotoKit APIs.
+    ApplePhotos {
+        asset: String,
+        #[serde(default)]
+        revision: String,
+    },
 }
 
 /// Copyright status (IPTC / XMP Rights Management `xmpRights:Marked`).

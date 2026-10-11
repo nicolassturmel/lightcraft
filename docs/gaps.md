@@ -11,7 +11,9 @@ and [ROADMAP.md](../ROADMAP.md) if they move.
 Hours are Opus 5.5 agent wall-clock hours (see [target-app-parity.md](target-app-parity.md#how-hours-are-calibrated)).
 `B` marks a gap that blocks **beta**.
 
-This macOS fork mitigates CR3 decoding and Subject/Background segmentation with Apple system APIs.
+This macOS fork uses Photos as its main library and stores original-safe edits as metadata or
+rendered copies in Photos > LightCraft. It mitigates CR3 decoding and Subject/Background
+segmentation with Apple system APIs.
 See [apple-integration.md](apple-integration.md). The portable gaps and scores below remain
 open; no broader camera-coverage claim is made from one Canon R8 test.
 

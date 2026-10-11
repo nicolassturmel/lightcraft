@@ -829,7 +829,7 @@ impl Rule {
                 // `/` and `\` both separate, whatever platform the catalog came from; demo photos have no path
                 let path = match &p.source {
                     Source::File { path } => path.replace('\\', "/"),
-                    Source::Demo { .. } => String::new(),
+                    Source::Demo { .. } | Source::ApplePhotos { .. } => String::new(),
                 };
                 let want = want.replace('\\', "/");
                 match op {

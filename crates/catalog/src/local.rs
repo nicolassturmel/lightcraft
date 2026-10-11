@@ -66,7 +66,7 @@ pub fn folder_of(p: &Photo) -> Option<String> {
             let key = crate::query::folder_key(path);
             key.rsplit_once('/').map(|(dir, _)| if dir.is_empty() { "/".to_string() } else { dir.to_string() })
         }
-        Source::Demo { .. } => None,
+        Source::Demo { .. } | Source::ApplePhotos { .. } => None,
     }
 }
 

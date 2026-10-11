@@ -32,8 +32,9 @@ jobs:
             'https://raw.pixls.us/getfile.php/6587/nice/Canon%20-%20EOS%20R8%20-%203:2.CR3' \
             -o corpus/raw/cr3-canon-r8-craw.cr3
           printf '%s\n' 'df33cf394573645ce03dea1b2e9f0b5cc2b7734e9e3391ee7114151414cf2812  corpus/raw/cr3-canon-r8-craw.cr3' | shasum -a 256 -c -
-      - name: RAW integration, stored mask geometry and serialization
+      - name: Photos ownership, edit durability, RAW and stored masks
         run: |
           cargo test --locked -p lightcraft-engine --lib apple::tests
+          cargo test --locked -p lightcraft-ui-egui photos_library_controls
           cargo test --locked -p lightcraft-pipeline stored_vision
           cargo test --locked -p lightcraft-pipeline stored_segmentations_render

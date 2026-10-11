@@ -6,26 +6,66 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "apple.status", "Apple Services", [], None, "{} → Photos authorization and Core Image RAW/Vision availability (never requests permission)", crate::apple::enabled, |_, _| {
             crate::apple::status().map_err(crate::EngineError::Other)
         }),
-        cmd!(query "library.applePhotos", "Browse Apple Photos", [], None, "{offset?:0, limit?:100 (1–200), album?:PhotoKitId} → {authorization, total, offset, nextOffset, assets, albums}; requests Photos permission when first used", crate::apple::enabled, |_, p| {
-            crate::apple::list_photos(p).map_err(crate::EngineError::Other)
-        }),
         cmd!(
-            "library.importApplePhotos",
-            "Import Apple Photos",
+            "library.applePhotos",
+            "Refresh Apple Photos",
+            ["File"],
+            None,
+            "{} → rebuild the transient main grid and album tree from the System Photo Library; no originals are copied",
+            crate::apple::primary,
+            |s, _| {
+                let loaded =
+                    crate::apple::load_snapshot(s.apple_library.as_ref().and_then(|l| l.directory.as_deref())).map_err(crate::EngineError::Other)?;
+                s.apply_photos_snapshot(loaded).map_err(crate::EngineError::Other)
+            }
+        ),
+        cmd!(
+            "library.photosNetwork",
+            "Photos iCloud Downloads",
             [],
             None,
-            "{ids:[PhotoKitId] (1–200), network?:false} → normal import report plus Photos errors; copies unmodified originals into Originals/Apple Photos, preferring RAW in RAW+JPEG pairs",
-            crate::apple::enabled,
+            "{enabled:bool} → allow PhotoKit to retrieve originals from iCloud on demand",
+            crate::apple::primary,
             |s, p| {
-                let request = crate::apple::export_request(s, p).map_err(crate::EngineError::Other)?;
-                let exported = crate::apple::export_originals(&request).map_err(crate::EngineError::Other)?;
-                let mut report = if exported.get("paths").and_then(|v| v.as_array()).is_some_and(|p| !p.is_empty()) {
-                    s.execute("library.import", &crate::apple::import_params(&exported))?
-                } else {
-                    json!({"imported":[], "duplicates":[], "failed":[]})
+                s.media.photos_network =
+                    p.get("enabled").and_then(|v| v.as_bool()).ok_or_else(|| super::bad("library.photosNetwork", "enabled must be a boolean"))?;
+                s.catalog.revision = s.catalog.revision.wrapping_add(1);
+                Ok(json!({"enabled":s.media.photos_network}))
+            }
+        ),
+        cmd!(
+            "library.importIntoApplePhotos",
+            "Import into Apple Photos",
+            [],
+            None,
+            "{paths:[file] (1–200)} → create assets in the system library; source files are kept",
+            crate::apple::primary,
+            |_, p| { crate::apple::import_paths(p).and_then(|paths| crate::apple::import_into_photos(&paths)).map_err(crate::EngineError::Other) }
+        ),
+        cmd!(
+            "photo.saveApplePhotosCopy",
+            "Save Edited Copy to Photos",
+            ["File"],
+            Some("Cmd+S"),
+            "{id?:active} → create a full-size JPEG in the Photos album LightCraft, with adjustment metadata attached to the copy; never edit the original",
+            crate::apple::has_photo,
+            |s, p| { crate::apple::prepare_copy(s, p).and_then(|job| job.run()).map_err(crate::EngineError::Other) }
+        ),
+        cmd!(
+            "photo.reopenApplePhotosRecipe",
+            "Reopen Photos Adjustments",
+            ["Photo"],
+            None,
+            "{} → read a LightCraft copy's adjustment metadata and reopen its original with those settings",
+            crate::apple::has_photo,
+            |s, _| {
+                let photo =
+                    s.active().and_then(|id| s.catalog.photo(id)).ok_or_else(|| super::bad("photo.reopenApplePhotosRecipe", "select a copy"))?;
+                let lightcraft_catalog::Source::ApplePhotos { asset, .. } = &photo.source else {
+                    return Err(super::bad("photo.reopenApplePhotosRecipe", "select a Photos copy"));
                 };
-                report["photosErrors"] = exported.get("errors").cloned().unwrap_or_else(|| json!([]));
-                Ok(report)
+                let recipe = crate::apple::load_recipe(asset, s.media.photos_network).map_err(crate::EngineError::Other)?;
+                crate::apple::apply_recipe(s, &recipe)
             }
         ),
     ]

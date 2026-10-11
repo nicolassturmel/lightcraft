@@ -382,7 +382,7 @@ fn stem_key(original: &str) -> String {
 fn file_path(p: &Photo) -> Option<&str> {
     match &p.source {
         Source::File { path } => Some(path),
-        Source::Demo { .. } => None,
+        Source::Demo { .. } | Source::ApplePhotos { .. } => None,
     }
 }
 

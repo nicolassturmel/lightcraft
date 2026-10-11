@@ -128,6 +128,7 @@ fn edit_external(s: &mut Session, p: &Value) -> Result<Value> {
     let ph = s.catalog.photo(id).cloned().ok_or_else(|| bad(C, "no photo"))?;
     let dir = match &ph.source {
         Source::File { path } => Path::new(path).parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default(),
+        Source::ApplePhotos { .. } => return Err(bad(C, "Export this Photos image before opening it in an external editor")),
         Source::Demo { .. } => match super::str_param(p, "dir") {
             Some(d) => d.to_string(),
             None => return Err(bad(C, "a generated demo photo has no folder: give `dir`")),

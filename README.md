@@ -10,11 +10,10 @@
 
 <h1 align="center">LightCraft</h1>
 
-This fork adds **Apple Photos browsing/import**, **Apple Core Image CR3 decoding**, and
-**Apple Vision Subject/Background masks** on macOS. Open **File → Apple Photos…** to connect
-the System Photo Library. Build a signed local app with `bash packaging/macos/develop.sh`, including HEIC
-originals. See [Apple integration](docs/apple-integration.md) for permissions, build instructions,
-supported macOS versions, command APIs and verification.
+This fork uses **Apple Photos as its main macOS library**, with **Apple Core Image CR3 decoding**
+and **Apple Vision Subject/Background masks**. Originals stay unchanged. Edits save as adjustment
+metadata; **⌘S** creates an edited copy with its recipe in a Photos album named **LightCraft**.
+See [Apple integration](docs/apple-integration.md) for permissions, build instructions and usage.
 
 <h3 align="center">Your photos. Your pixels. Your machine.</h3>
 

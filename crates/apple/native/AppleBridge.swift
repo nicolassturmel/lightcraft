@@ -5,7 +5,6 @@ import CoreImage
 import ImageIO
 import Vision
 import UniformTypeIdentifiers
-import CryptoKit
 import Darwin
 
 struct BridgeError: LocalizedError {
@@ -14,19 +13,31 @@ struct BridgeError: LocalizedError {
     var errorDescription: String? { message }
 }
 
+// Remove temporary PhotoKit originals even if the Rust parent closes during a download.
+final class TemporaryOriginals {
+    static let shared = TemporaryOriginals()
+    private let lock = NSLock()
+    private var paths = Set<URL>()
+    func track(_ path: URL) { lock.lock(); paths.insert(path); lock.unlock() }
+    func forget(_ path: URL) { lock.lock(); paths.remove(path); lock.unlock() }
+    func cleanup() {
+        lock.lock(); let pending = paths; paths.removeAll(); lock.unlock()
+        for path in pending { try? FileManager.default.removeItem(at: path) }
+    }
+}
+
 struct Request: Decodable {
-    let operation: String
+    var operation: String
     var path: String?
     var output: String?
     var maxEdge: Int?
     var width: Int?
     var height: Int?
     var side: Int?
-    var offset: Int?
-    var limit: Int?
-    var album: String?
-    var ids: [String]?
+    var paths: [String]?
     var network: Bool?
+    var asset: String?
+    var recipe: String?
 }
 
 func required(_ value: String?, _ name: String) throws -> String {
@@ -63,95 +74,218 @@ func originalResource(_ asset: PHAsset) -> PHAssetResource? {
         ?? originals.first { $0.type == .photo }
 }
 
-func listPhotos(_ request: Request) async throws -> [String: Any] {
+// This is a transient metadata projection, never a second photo catalogue.
+func snapshotPhotos(_ request: Request) async throws -> [String: Any] {
     let status = try await authorizePhotos()
+    let destination = URL(fileURLWithPath: try required(request.output, "output"))
+    guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
+        throw BridgeError("Cannot create the Photos metadata response")
+    }
+    let file = try FileHandle(forWritingTo: destination)
+    defer { try? file.close() }
+    var bytes = 0
+    func write(_ data: Data) throws {
+        bytes += data.count
+        guard bytes <= 128_000_000 else { throw BridgeError("Photos metadata exceeds the 128 MB session limit") }
+        try file.write(contentsOf: data)
+    }
+    func object(_ value: Any) throws { try write(JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed])) }
     let options = PHFetchOptions()
     options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-    options.predicate = NSPredicate(format: "mediaType = %d", PHAssetMediaType.image.rawValue)
-    let assets: PHFetchResult<PHAsset>
-    if let album = request.album, !album.isEmpty {
-        guard let collection = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [album], options: nil).firstObject else {
-            throw BridgeError("Apple Photos album is no longer available")
-        }
-        assets = PHAsset.fetchAssets(in: collection, options: options)
-    } else {
-        assets = PHAsset.fetchAssets(with: .image, options: options)
-    }
-    let start = min(max(request.offset ?? 0, 0), assets.count)
-    let end = min(start + min(max(request.limit ?? 100, 1), 200), assets.count)
+    let assets = PHAsset.fetchAssets(with: .image, options: options)
+    guard assets.count <= 500_000 else { throw BridgeError("This Photos library exceeds the 500,000 image session limit") }
     let formatter = ISO8601DateFormatter()
-    var rows: [[String: Any]] = []
-    for i in start..<end {
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    try write(Data("{\"authorization\":".utf8)); try object(authorizationName(status))
+    try write(Data(",\"assets\":[".utf8))
+    var count = 0
+    for i in 0..<assets.count {
         let asset = assets.object(at: i)
         guard let resource = originalResource(asset) else { continue }
+        if count > 0 { try write(Data(",".utf8)) }; count += 1
         var row: [String: Any] = ["id": asset.localIdentifier, "name": resource.originalFilename,
             "width": asset.pixelWidth, "height": asset.pixelHeight, "favorite": asset.isFavorite,
-            "raw": UTType(resource.uniformTypeIdentifier)?.conforms(to: .rawImage) == true]
+            "raw": UTType(resource.uniformTypeIdentifier)?.conforms(to: .rawImage) == true,
+            "revision": asset.modificationDate.map { formatter.string(from: $0) } ?? "",
+            "format": (resource.originalFilename as NSString).pathExtension.uppercased()]
         if let date = asset.creationDate { row["captured"] = formatter.string(from: date) }
-        rows.append(row)
+        try object(row)
     }
-    var albums: [[String: String]] = []
-    let collections = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)
-    for i in 0..<min(collections.count, 1000) {
-        let album = collections.object(at: i)
-        albums.append(["id": album.localIdentifier, "name": album.localizedTitle ?? "Album"])
+    try write(Data("],\"albums\":[".utf8))
+    var seen = Set<String>()
+    var albums = 0
+    func collection(_ value: PHCollection, parent: String?, depth: Int) throws {
+        guard depth < 32 else { throw BridgeError("Photos album folders are too deeply nested") }
+        guard seen.insert(value.localIdentifier).inserted else { return }
+        guard seen.count <= 20_000 else { throw BridgeError("Photos has too many albums for this session") }
+        var row: [String: Any] = ["id": value.localIdentifier, "name": value.localizedTitle ?? "Album"]
+        if let parent { row["parent"] = parent }
+        if let album = value as? PHAssetCollection {
+            var ids: [String] = []
+            let members = PHAsset.fetchAssets(in: album, options: options)
+            guard members.count <= 500_000 else { throw BridgeError("Photos album is too large") }
+            members.enumerateObjects { asset, _, _ in if asset.mediaType == .image { ids.append(asset.localIdentifier) } }
+            row["photos"] = ids; row["folder"] = false
+        } else if value is PHCollectionList {
+            row["photos"] = [String](); row["folder"] = true
+        } else { return }
+        if albums > 0 { try write(Data(",".utf8)) }; albums += 1
+        try object(row)
+        if let folder = value as? PHCollectionList {
+            let children = PHCollection.fetchCollections(in: folder, options: nil)
+            for i in 0..<children.count { try collection(children.object(at: i), parent: folder.localIdentifier, depth: depth + 1) }
+        }
     }
-    return ["authorization": authorizationName(status), "total": assets.count, "offset": start,
-        "nextOffset": end, "assets": rows, "albums": albums]
+    let roots = PHCollectionList.fetchTopLevelUserCollections(with: nil)
+    for i in 0..<roots.count { try collection(roots.object(at: i), parent: nil, depth: 0) }
+    let others = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)
+    for i in 0..<others.count { try collection(others.object(at: i), parent: nil, depth: 0) }
+    try write(Data("]}".utf8))
+    return ["authorization": authorizationName(status), "photos": count, "albums": albums]
 }
 
-func exportPhotos(_ request: Request) async throws -> [String: Any] {
+func photosAsset(_ id: String) throws -> PHAsset {
+    guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject,
+          asset.mediaType == .image else { throw BridgeError("This photo is no longer available in Apple Photos; refresh the library") }
+    return asset
+}
+
+@available(macOS 12.0, *)
+func decodePhotos(_ request: Request) async throws -> [String: Any] {
     _ = try await authorizePhotos()
-    guard let ids = request.ids, !ids.isEmpty, ids.count <= 200 else {
-        throw BridgeError("Select between 1 and 200 Apple Photos assets")
+    let asset = try photosAsset(required(request.asset, "asset"))
+    guard let original = originalResource(asset) else { throw BridgeError("Photos has no readable image resource") }
+    let isRaw = UTType(original.uniformTypeIdentifier)?.conforms(to: .rawImage) == true
+    let resource = isRaw ? original : (PHAssetResource.assetResources(for: asset).first { $0.type == .fullSizePhoto } ?? original)
+    let output = URL(fileURLWithPath: try required(request.output, "output"))
+    // The public PhotoKit API streams a resource to a short-lived file. Rust owns the enclosing
+    // temporary directory, so cancellation/timeouts remove it too. No Originals folder or import.
+    let suffix = (resource.originalFilename as NSString).pathExtension
+    let input = output.deletingLastPathComponent().appendingPathComponent("source-" + UUID().uuidString + "." + suffix)
+    TemporaryOriginals.shared.track(input)
+    defer { try? FileManager.default.removeItem(at: input); TemporaryOriginals.shared.forget(input) }
+    let options = PHAssetResourceRequestOptions()
+    options.isNetworkAccessAllowed = request.network ?? false
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        PHAssetResourceManager.default().writeData(for: resource, toFile: input, options: options) { error in
+            if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+        }
     }
-    let destination = URL(fileURLWithPath: try required(request.output, "output"), isDirectory: true)
-    try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
-    let assets = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil)
-    var paths: [String] = []
-    var errors: [[String: String]] = []
-    for id in ids {
-        var selected: PHAsset?
-        assets.enumerateObjects { asset, _, stop in
-            if asset.localIdentifier == id { selected = asset; stop.pointee = true }
-        }
-        guard let asset = selected, let resource = originalResource(asset) else {
-            errors.append(["id": id, "error": "Asset or original is no longer available"])
-            continue
-        }
-        let digest = SHA256.hash(data: Data((id + "|" + resource.originalFilename + "|" + resource.uniformTypeIdentifier).utf8))
-            .map { String(format: "%02x", $0) }.joined()
-        let dir = destination.appendingPathComponent(digest, isDirectory: true)
-        let name = (resource.originalFilename as NSString).lastPathComponent
-        guard !name.isEmpty, name != ".", name != ".." else {
-            errors.append(["id": id, "error": "Invalid original filename"]); continue
-        }
-        let file = dir.appendingPathComponent(name)
-        let marker = dir.appendingPathComponent(".complete.json")
-        let temporary = dir.appendingPathComponent(".download-" + UUID().uuidString)
+    if isRaw {
+        var rawRequest = request
+        rawRequest.operation = "raw-decode"; rawRequest.path = input.path
+        var result = try raw(rawRequest); result["raw"] = true
+        return result
+    }
+    guard let image = CIImage(contentsOf: input, options: [.applyOrientationProperty: true]) else {
+        throw BridgeError("Apple Core Image cannot decode this Photos image")
+    }
+    let edge = request.maxEdge ?? 16384
+    guard edge > 0 else { throw BridgeError("Invalid Photos preview size") }
+    let scale = min(1, Double(edge) / max(image.extent.width, image.extent.height))
+    let scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+    let bounds = scaled.extent.integral
+    let w = Int(bounds.width), h = Int(bounds.height)
+    let count = try checkedDimensions(w, h, limit: 100_000_000)
+    guard let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB) else { throw BridgeError("Linear sRGB is unavailable") }
+    let context = CIContext(options: [.cacheIntermediates: false])
+    var pixels = [Float](repeating: 0, count: count * 4)
+    pixels.withUnsafeMutableBytes { buffer in
+        if let address = buffer.baseAddress { context.render(scaled, toBitmap: address, rowBytes: w * 16, bounds: bounds, format: .RGBAf, colorSpace: space) }
+    }
+    try pixels.withUnsafeBytes { try Data($0).write(to: output, options: .atomic) }
+    return ["width": w, "height": h, "temperature": 6500.0, "tint": 0.0, "raw": false,
+        "colorSpace": "extended-linear-sRGB", "decoder": "Apple PhotoKit/Core Image"]
+}
+
+let adjustmentIdentifier = "com.nicolassturmel.lightcraft.photos"
+let adjustmentVersion = "1"
+
+func savePhotosCopy(_ request: Request) async throws -> [String: Any] {
+    _ = try await authorizePhotos()
+    let sourceID = try required(request.asset, "asset")
+    let source = try photosAsset(sourceID)
+    let jpeg = URL(fileURLWithPath: try required(request.path, "path"))
+    let recipeURL = URL(fileURLWithPath: try required(request.recipe, "recipe"))
+    guard (try recipeURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 16_000_000 else { throw BridgeError("Adjustment metadata is too large") }
+    let recipe = try Data(contentsOf: recipeURL)
+    guard let info = try JSONSerialization.jsonObject(with: recipe) as? [String: Any],
+          info["schema"] as? Int == 1, info["originalAssetId"] as? String == sourceID else {
+        throw BridgeError("The adjustment recipe does not belong to the selected Photos original")
+    }
+    guard (try jpeg.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 512_000_000 else { throw BridgeError("Photos copy is too large") }
+    let jpegData = try Data(contentsOf: jpeg)
+    guard let image = CGImageSourceCreateWithURL(jpeg as CFURL, nil), CGImageSourceGetCount(image) > 0,
+          CGImageSourceGetType(image) as String? == UTType.jpeg.identifier else { throw BridgeError("An edited Photos copy must be a valid JPEG") }
+    let options = PHFetchOptions(); options.predicate = NSPredicate(format: "title = %@", "LightCraft")
+    let album = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: options).firstObject
+    var createdID: String?
+    var outputError: Error?
+    // Only creation requests are used. There is deliberately no change/delete request for source.
+    try await PHPhotoLibrary.shared().performChanges {
+        let creation = PHAssetCreationRequest.forAsset()
+        let resourceOptions = PHAssetResourceCreationOptions()
+        resourceOptions.originalFilename = "LightCraft-" + jpeg.lastPathComponent
+        creation.addResource(with: .photo, fileURL: jpeg, options: resourceOptions)
+        creation.creationDate = source.creationDate; creation.location = source.location
+        guard let placeholder = creation.placeholderForCreatedAsset else { return }
+        createdID = placeholder.localIdentifier
+        let output = PHContentEditingOutput(placeholderForCreatedAsset: placeholder)
+        output.adjustmentData = PHAdjustmentData(formatIdentifier: adjustmentIdentifier, formatVersion: adjustmentVersion, data: recipe)
         do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            // A completion marker is written only after PhotoKit has finished and the rename succeeds.
-            if !FileManager.default.fileExists(atPath: marker.path) || !FileManager.default.fileExists(atPath: file.path) {
-                let options = PHAssetResourceRequestOptions()
-                options.isNetworkAccessAllowed = request.network ?? false
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                    PHAssetResourceManager.default().writeData(for: resource, toFile: temporary, options: options) { error in
-                        if let error { continuation.resume(throwing: error) } else { continuation.resume() }
-                    }
-                }
-                if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
-                try FileManager.default.moveItem(at: temporary, to: file)
-                let stamp = try JSONSerialization.data(withJSONObject: ["id": id, "originalFilename": name])
-                try stamp.write(to: marker, options: .atomic)
-            }
-            paths.append(file.path)
-        } catch {
-            try? FileManager.default.removeItem(at: temporary)
-            errors.append(["id": id, "error": error.localizedDescription])
+            try jpegData.write(to: output.renderedContentURL, options: .atomic)
+            creation.contentEditingOutput = output
+        } catch { outputError = error }
+        let change = album.flatMap { PHAssetCollectionChangeRequest(for: $0) }
+            ?? PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: "LightCraft")
+        change.addAssets([placeholder] as NSArray)
+    }
+    guard let createdID else { throw BridgeError("Photos did not return the edited copy identifier") }
+    var result: [String: Any] = ["id": createdID, "album": "LightCraft", "originalUnchanged": true, "adjustmentsSaved": outputError == nil]
+    if let outputError { result["warning"] = "The edited copy was saved, but its adjustment metadata could not be attached: " + outputError.localizedDescription }
+    return result
+}
+
+func importPhotos(_ request: Request) async throws -> [String: Any] {
+    _ = try await authorizePhotos()
+    guard let paths = request.paths, !paths.isEmpty, paths.count <= 200 else { throw BridgeError("Select 1–200 image files") }
+    var urls: [URL] = []
+    for path in paths {
+        let url = URL(fileURLWithPath: path)
+        guard let image = CGImageSourceCreateWithURL(url as CFURL, nil), CGImageSourceGetCount(image) > 0 else {
+            throw BridgeError("Photos cannot import " + url.lastPathComponent + ". Import folders using the Photos app.")
+        }
+        urls.append(url)
+    }
+    var ids: [String] = []
+    try await PHPhotoLibrary.shared().performChanges {
+        for url in urls {
+            let creation = PHAssetCreationRequest.forAsset()
+            let options = PHAssetResourceCreationOptions(); options.shouldMoveFile = false
+            options.originalFilename = url.lastPathComponent
+            creation.addResource(with: .photo, fileURL: url, options: options)
+            if let placeholder = creation.placeholderForCreatedAsset { ids.append(placeholder.localIdentifier) }
         }
     }
-    return ["paths": paths, "errors": errors]
+    return ["imported": ids, "backend": "applePhotos"]
+}
+
+func photosRecipe(_ request: Request) async throws -> [String: Any] {
+    _ = try await authorizePhotos()
+    let asset = try photosAsset(required(request.asset, "asset"))
+    let options = PHContentEditingInputRequestOptions()
+    options.isNetworkAccessAllowed = request.network ?? false
+    options.canHandleAdjustmentData = { $0.formatIdentifier == adjustmentIdentifier && $0.formatVersion == adjustmentVersion }
+    let input: PHContentEditingInput = try await withCheckedThrowingContinuation { continuation in
+        asset.requestContentEditingInput(with: options) { input, info in
+            if let input { continuation.resume(returning: input) }
+            else { continuation.resume(throwing: info[PHContentEditingInputErrorKey] as? Error ?? BridgeError("Photos adjustment metadata is unavailable")) }
+        }
+    }
+    guard let adjustment = input.adjustmentData, adjustment.formatIdentifier == adjustmentIdentifier,
+          adjustment.formatVersion == adjustmentVersion, adjustment.data.count <= 16_000_000 else { throw BridgeError("This photo has no LightCraft adjustment recipe") }
+    try adjustment.data.write(to: URL(fileURLWithPath: try required(request.output, "output")), options: .atomic)
+    return ["schema": 1]
 }
 
 @available(macOS 12.0, *)
@@ -247,7 +381,7 @@ func foregroundMask(_ request: Request) throws -> [String: Any] {
         let parent = getppid()
         let watchdog = DispatchSource.makeTimerSource(queue: .global())
         watchdog.schedule(deadline: .now() + 1, repeating: 1)
-        watchdog.setEventHandler { if getppid() != parent { exit(2) } }
+        watchdog.setEventHandler { if getppid() != parent { TemporaryOriginals.shared.cleanup(); exit(2) } }
         watchdog.resume()
         defer { watchdog.cancel() }
         do {
@@ -257,11 +391,16 @@ func foregroundMask(_ request: Request) throws -> [String: Any] {
             let result: [String: Any]
             switch request.operation {
             case "health":
-                result = ["protocol": 1, "photos": authorizationName(PHPhotoLibrary.authorizationStatus(for: .readWrite)),
+                result = ["protocol": 2, "photos": authorizationName(PHPhotoLibrary.authorizationStatus(for: .readWrite)),
                     "raw": ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 12, minorVersion: 0, patchVersion: 0)),
                     "vision": ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 14, minorVersion: 0, patchVersion: 0))]
-            case "photos-list": result = try await listPhotos(request)
-            case "photos-export": result = try await exportPhotos(request)
+            case "photos-import": result = try await importPhotos(request)
+            case "photos-snapshot": result = try await snapshotPhotos(request)
+            case "photos-decode":
+                guard #available(macOS 12.0, *) else { throw BridgeError("Photos image decoding requires macOS 12 or later") }
+                result = try await decodePhotos(request)
+            case "photos-save-copy": result = try await savePhotosCopy(request)
+            case "photos-recipe": result = try await photosRecipe(request)
             case "raw-probe", "raw-decode":
                 guard #available(macOS 12.0, *) else { throw BridgeError("Apple RAW requires macOS 12 or later") }
                 result = try raw(request)

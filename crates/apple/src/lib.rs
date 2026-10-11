@@ -12,6 +12,8 @@ pub struct RawMetadata {
     pub height: usize,
     pub temperature: f64,
     pub tint: f64,
+    #[serde(default)]
+    pub raw: bool,
 }
 
 pub struct RawImage {
@@ -38,6 +40,63 @@ pub fn decode_raw(path: &Path, max_edge: usize) -> Result<RawImage, String> {
     {
         let _ = (path, max_edge);
         Err("Apple RAW is available only on macOS".into())
+    }
+}
+
+/// Read the system library's metadata into a transient session projection.
+pub fn photos_snapshot() -> Result<Value, String> {
+    #[cfg(target_os = "macos")]
+    return native::photos_file("photos-snapshot", None, false, 128_000_000);
+    #[cfg(not(target_os = "macos"))]
+    Err("Apple Photos is available only on macOS".into())
+}
+
+pub fn photos_recipe(asset: &str, network: bool) -> Result<Value, String> {
+    #[cfg(target_os = "macos")]
+    return native::photos_file("photos-recipe", Some(asset), network, 16_000_000);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (asset, network);
+        Err("Apple Photos is available only on macOS".into())
+    }
+}
+
+/// Decode directly through PhotoKit. The resource file exists only for the duration of decoding.
+pub fn decode_photos(asset: &str, max_edge: usize, network: bool) -> Result<RawImage, String> {
+    #[cfg(target_os = "macos")]
+    return native::decode_image(serde_json::json!({"operation":"photos-decode", "asset":asset,
+        "maxEdge":max_edge.min(100_000), "network":network}));
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (asset, max_edge, network);
+        Err("Apple Photos is available only on macOS".into())
+    }
+}
+
+/// Create a new Photos asset and attach the edit recipe to that copy. Never modify the source.
+pub fn save_photos_copy(asset: &str, filename: &str, jpeg: &[u8], recipe: &Value) -> Result<Value, String> {
+    if asset.is_empty() || asset.len() > 1024 || recipe.get("originalAssetId").and_then(Value::as_str) != Some(asset) {
+        return Err("the Photos copy recipe must identify its original".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::io::Write;
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let filename = Path::new(filename).file_name().and_then(|s| s.to_str()).filter(|s| *s != "." && *s != "..").ok_or("invalid copy filename")?;
+        let image = dir.path().join(filename);
+        let metadata = dir.path().join("recipe.json");
+        let data = serde_json::to_vec(recipe).map_err(|e| e.to_string())?;
+        if data.len() > 16_000_000 || jpeg.len() > 512_000_000 {
+            return Err("Photos copy exceeds the size limit".into());
+        }
+        std::fs::File::create(&image).and_then(|mut f| f.write_all(jpeg)).map_err(|e| e.to_string())?;
+        std::fs::write(&metadata, data).map_err(|e| e.to_string())?;
+        invoke(&serde_json::json!({"operation":"photos-save-copy", "asset":asset, "path":image, "recipe":metadata}), Duration::from_secs(180))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (filename, jpeg);
+        Err("Apple Photos is available only on macOS".into())
     }
 }
 
@@ -191,11 +250,22 @@ mod native {
         Ok(file)
     }
 
+    pub fn photos_file(operation: &str, asset: Option<&str>, network: bool, cap: u64) -> Result<Value, String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let output = dir.path().join("photos.json");
+        invoke(&json!({"operation":operation, "asset":asset, "network":network, "output":output}), Duration::from_secs(180))?;
+        serde_json::from_slice(&bounded_read(&output, cap)?).map_err(|e| e.to_string())
+    }
+
     pub fn decode_raw(path: &Path, max_edge: usize) -> Result<RawImage, String> {
+        decode_image(json!({"operation":"raw-decode", "path":path, "maxEdge":max_edge.min(100_000)}))
+    }
+
+    pub fn decode_image(mut request: Value) -> Result<RawImage, String> {
         let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
         let output = dir.path().join("rgba.f32");
-        let value =
-            invoke(&json!({"operation":"raw-decode", "path":path, "output":output, "maxEdge":max_edge.min(100_000)}), Duration::from_secs(120))?;
+        request["output"] = json!(output);
+        let value = invoke(&request, Duration::from_secs(180))?;
         let metadata: RawMetadata = serde_json::from_value(value).map_err(|e| e.to_string())?;
         let count = checked_pixels(metadata.width, metadata.height, 100_000_000)?;
         let bytes = bounded_read(&output, (count as u64).saturating_mul(16))?;
@@ -264,7 +334,7 @@ mod tests {
     #[test]
     fn compiled_helper_reports_capabilities_without_requesting_photos() {
         let result = invoke(&serde_json::json!({"operation":"health"}), Duration::from_secs(15)).unwrap();
-        assert_eq!(result["protocol"], 1);
+        assert_eq!(result["protocol"], 2);
         assert!(result["photos"].is_string());
         assert!(result["vision"].is_boolean());
     }

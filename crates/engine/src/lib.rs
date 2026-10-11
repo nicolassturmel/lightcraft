@@ -224,6 +224,8 @@ pub struct Session {
     pub active_spot: Option<usize>,
     /// The persistent library this session writes to (`None` = in-memory only).
     pub library: Option<library::Library>,
+    /// macOS: the system library projection and per-asset adjustments, without an own catalogue.
+    pub apple_library: Option<apple::Library>,
     /// Identity of current library opening; refreshed only after a successful open.
     pub(crate) library_identity: Arc<()>,
     /// XMP sidecar preferences (persisted with the library).
@@ -332,6 +334,7 @@ impl Session {
             segmenter: segment::Segmenter::default(),
             active_spot: None,
             library: None,
+            apple_library: None,
             library_identity: Arc::new(()),
             xmp: sidecar::XmpPrefs::default(),
             last_export: None,
@@ -368,6 +371,7 @@ impl Session {
 
     /// Run a command by id. THE entry point for every frontend.
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
+        apple::command_allowed(self, id).map_err(|why| EngineError::Disabled(id.to_string(), why))?;
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         // a command that validates the photos a call names isn't held back by the selection
         if !(spec.explicit_targets && cmd::names_photos(params)) {
@@ -386,6 +390,7 @@ impl Session {
     }
 
     fn run_command(&mut self, id: &str, journal: Option<&Value>, f: impl FnOnce(&mut Session) -> Result<Value>) -> Result<Value> {
+        apple::command_allowed(self, id).map_err(|why| EngineError::Disabled(id.to_string(), why))?;
         let log_start = self.pending_log.len();
         let was_active = self.active();
         self.depth += 1;
@@ -413,7 +418,7 @@ impl Session {
                 self.auto_write_sidecars(&self.pending_log[log_start..]);
             }
         }
-        if self.depth == 0 && self.library.is_some() {
+        if self.depth == 0 && (self.library.is_some() || self.apple_library.is_some()) {
             // Make the command durable before reporting success. When the command's own records
             // can't be appended, it fails with `NotSaved`: the change stays applied in memory and
             // queued, and the next save (any later command, or the frame loop) retries it. Other
@@ -438,6 +443,9 @@ impl Session {
 
     /// Apply an op as one undoable step.
     pub fn commit(&mut self, label: &str, op: Op) -> Result<()> {
+        if self.apple_library.is_some() {
+            apple::annotation_op(&op, 0).map_err(EngineError::Other)?;
+        }
         let fwd = op.clone();
         let inv = self.catalog.apply(op)?;
         self.pending_log.push(fwd);
@@ -475,6 +483,9 @@ impl Session {
     /// scan): journaled like any op, but not an undo step, and it leaves the redo stack alone.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn apply_system(&mut self, op: Op) -> Result<()> {
+        if self.apple_library.is_some() {
+            apple::annotation_op(&op, 0).map_err(EngineError::Other)?;
+        }
         let fwd = op.clone();
         self.catalog.apply(op)?;
         self.pending_log.push(fwd);

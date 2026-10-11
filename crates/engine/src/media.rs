@@ -237,6 +237,12 @@ pub enum SourceRef {
         /// The photo has a cached denoised picture: load it with the plain one (see [`PairLoader`]).
         denoise: Option<(DenoiseSpec, PairLoader)>,
     },
+    /// A resource owned by Apple Photos. No persistent original copy or file path.
+    ApplePhotos {
+        asset: String,
+        max_edge: usize,
+        network: bool,
+    },
     /// A smart preview standing in for a missing original.
     Smart {
         path: std::path::PathBuf,
@@ -251,6 +257,7 @@ impl SourceRef {
     pub fn load_source(&self) -> Result<DecodedSource, String> {
         let image = match self {
             SourceRef::Loaded(a) => return Ok((**a).clone()),
+            SourceRef::ApplePhotos { asset, max_edge, network } => return crate::apple::decode_photo(asset, *max_edge, *network),
             SourceRef::Demo { scene, max_edge } => crate::demo::scene_pixels(scene, *max_edge)?,
             SourceRef::File { path, max_edge, loader, fallback, denoise } => {
                 let plain = || match loader {
@@ -317,6 +324,8 @@ pub struct MediaCache {
     /// share of [`crate::memory::budget`]); the least recently used entry of any of them goes first.
     budget: usize,
     pub file_loader: Option<FileLoader>,
+    /// User preference: permit on-demand PhotoKit iCloud downloads.
+    pub photos_network: bool,
     pub file_probe: Option<FileProbe>,
     pub preview_loader: Option<PreviewLoader>,
     /// Reads a photo file's bytes (Photo Merge); `None` = the local file system.
@@ -390,6 +399,7 @@ impl Default for MediaCache {
             preview_capacity: 0,
             budget,
             file_loader: None,
+            photos_network: false,
             file_probe: None,
             preview_loader: None,
             file_bytes: None,
@@ -641,6 +651,7 @@ impl MediaCache {
                     None => SourceRef::File { path: format!("demo:{scene}"), max_edge, loader: None, fallback: None, denoise: None },
                 }
             }
+            Source::ApplePhotos { asset, .. } => SourceRef::ApplePhotos { asset: asset.clone(), max_edge, network: self.photos_network },
             Source::File { path } => {
                 SourceRef::File { path: path.clone(), max_edge, loader: self.file_loader.clone(), fallback: None, denoise: None }
             }
@@ -928,6 +939,7 @@ pub fn content_key(p: &Photo) -> String {
     match (&p.content_hash, &p.source) {
         (Some(h), _) => h.clone(),
         (None, Source::Demo { scene }) => format!("demo:{scene}"),
+        (None, Source::ApplePhotos { asset, revision }) => format!("photos:{asset}:{revision}"),
         (None, Source::File { path }) => format!("file:{path}:{}", p.file_size),
     }
 }

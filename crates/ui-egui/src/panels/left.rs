@@ -183,7 +183,13 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     frame.show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::hover());
-        ui.painter().text(pos2(hr.left() + 18.0, hr.center().y), Align2::LEFT_CENTER, crate::i18n::tr("My Photos"), t.semibold(15.0), t.text);
+        ui.painter().text(
+            pos2(hr.left() + 18.0, hr.center().y),
+            Align2::LEFT_CENTER,
+            crate::i18n::tr(if app.session.apple_library.is_some() { "Apple Photos" } else { "My Photos" }),
+            t.semibold(15.0),
+            t.text,
+        );
         let counts = app.caches.counts(&app.session.catalog);
         let (total, picks, deleted) = (counts.total, counts.picks, counts.deleted);
         egui::ScrollArea::both().id_salt("left-scroll").auto_shrink([false, false]).show_viewport(ui, |ui, viewport| {
@@ -197,12 +203,16 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
                 // where the visible part of the content ends (screen x), for what stays at the edge
                 d.insert_temp(egui::Id::new("left-visible-right"), ui.cursor().left() + viewport.max.x);
             });
+            crate::apple_photos::sidebar(app, ui);
             let src = app.session.source;
             for (id, icon, label, count, s) in [
                 ("all", Icon::Photos, "All Photos", Some(total), LibrarySource::All),
                 ("recentlyAdded", Icon::Clock, "Recently Added", None, LibrarySource::RecentlyAdded),
                 ("picks", Icon::FlagPick, "Picks", Some(picks), LibrarySource::Picks),
             ] {
+                if app.session.apple_library.is_some() && id == "recentlyAdded" {
+                    continue;
+                }
                 if row(app, ui, id, icon, label, count, src == s, 0.0).clicked() {
                     let _ = app.run("library.source", json!({"kind": id}));
                 }
@@ -225,7 +235,8 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
                     .max_rect(Rect::from_min_max(pos2(plus_right - 50.0, ar.top()), pos2(plus_right, ar.bottom())))
                     .layout(egui::Layout::right_to_left(egui::Align::Center)),
             );
-            let plus = icon_button(&mut hdr, "albumNew", Icon::Plus, vec2(26.0, 26.0), false, true, "Create Album");
+            let plus =
+                icon_button(&mut hdr, "albumNew", Icon::Plus, vec2(26.0, 26.0), false, app.session.apple_library.is_none(), "Create Album in Photos");
             egui::Popup::menu(&plus).show(|ui| {
                 if ui.button(crate::i18n::tr("Create Album…")).clicked() {
                     app.ui.dialog = Some(crate::state::Dialog::NewAlbum { name: String::new(), folder: false, parent: None });
@@ -267,7 +278,9 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
                 albums_tree(app, ui, &kids, None, 0.0, &open_to);
             }
             ui.add_space(10.0);
-            local_section(app, ui);
+            if app.session.apple_library.is_none() {
+                local_section(app, ui);
+            }
             // By date
             let (_, dates_open) = sidebar_section_header(app, ui, "byDate", "By Date");
             let groups = if dates_open { app.caches.date_groups(&app.session.catalog) } else { Default::default() };
@@ -285,10 +298,15 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
                     }
                 }
             }
-            folders_section(app, ui);
+            if app.session.apple_library.is_none() {
+                folders_section(app, ui);
+            }
             keywords_section(app, ui);
             ui.add_space(10.0);
-            if row(app, ui, "recentlyDeleted", Icon::Trash, "Recently Deleted", Some(deleted), src == LibrarySource::RecentlyDeleted, 0.0).clicked() {
+            if app.session.apple_library.is_none()
+                && row(app, ui, "recentlyDeleted", Icon::Trash, "Recently Deleted", Some(deleted), src == LibrarySource::RecentlyDeleted, 0.0)
+                    .clicked()
+            {
                 let _ = app.run("library.source", json!({"kind": "recentlyDeleted"}));
             }
             // what the rows asked for becomes next frame's width
@@ -703,7 +721,7 @@ fn albums_tree(app: &mut LightcraftApp, ui: &mut egui::Ui, all: &AlbumKids, pare
                 row_sensed(app, ui, &format!("folder:{}", a.id.0), Icon::Folder, &a.name, None, None, false, indent, Sense::click_and_drag(), None);
             // a folder is no source, so its row folds it too; the triangle is the same click, aimed
             let has_children = all.get(&Some(a.id)).is_some_and(|v| !v.is_empty());
-            if resp.drag_started() {
+            if app.session.apple_library.is_none() && resp.drag_started() {
                 app.ui.dragging_album = Some(a.id.0);
             }
             if album_drag_over(app, ui, &resp, a, has_children.then_some(&mut open), indent) {
@@ -740,7 +758,7 @@ fn albums_tree(app: &mut LightcraftApp, ui: &mut egui::Ui, all: &AlbumKids, pare
             if !problems.is_empty() {
                 crate::widgets::register(ui.ctx(), format!("albumProblem:{}", a.id.0), resp.rect);
             }
-            if resp.drag_started() {
+            if app.session.apple_library.is_none() && resp.drag_started() {
                 app.ui.dragging_album = Some(a.id.0);
             }
             album_drag_over(app, ui, &resp, a, None, indent);
@@ -1005,6 +1023,9 @@ pub fn album_drag_feedback(app: &mut LightcraftApp, ctx: &egui::Context) {
 /// An album row while photos are dragged from the grid: highlighted under the pointer; a
 /// release there adds them.
 fn drop_target(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::Response, a: &Album) {
+    if app.session.apple_library.is_some() {
+        return;
+    }
     let Some(ids) = app.ui.dragging_photos.clone() else { return };
     let over = pointer_over(ui, resp.rect);
     if !over {
@@ -1023,6 +1044,12 @@ fn drop_target(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::Response
 }
 
 fn folder_menu(app: &mut LightcraftApp, resp: &egui::Response, a: &Album) {
+    if app.session.apple_library.is_some() {
+        resp.context_menu(|ui| {
+            ui.label("Manage this album in Apple Photos");
+        });
+        return;
+    }
     resp.context_menu(|ui| {
         if a.folder {
             // the same commands as File ▸ New…, aimed at this folder

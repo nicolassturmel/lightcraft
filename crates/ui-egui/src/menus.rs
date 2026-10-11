@@ -165,7 +165,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("file.addPhotos", "Import Photos…", Some("Cmd+Shift+I"), "File"),
     ("file.addFolder", "Import from Folder…", None, "File"),
     ("file.importLightroom", "Import Lightroom Catalog…", None, "File"),
-    ("file.applePhotos", "Apple Photos…", None, "File"),
+    ("file.applePhotos", "Apple Photos Library…", None, "File"),
     ("file.addFromDevice", "Import from Device", None, ""),
     ("file.findMissing", "Find Missing Photos…", None, "File"),
     ("file.backupLibrary", "Back Up Library…", None, "File"),
@@ -1153,7 +1153,7 @@ pub fn run_ui_command(app: &mut LightcraftApp, id: &str, p: &Value) -> Option<Re
                 return Some(Ok(Value::Null));
             }
             // review first: the import dialog lists what was found
-            crate::import::open(app, paths)
+            if app.session.apple_library.is_some() { crate::import::start_paths(app, paths) } else { crate::import::open(app, paths) }
         }
         "file.applePhotos" => crate::apple_photos::open(app),
         "file.importLightroom" => {
@@ -1608,8 +1608,11 @@ pub fn run_ui_command(app: &mut LightcraftApp, id: &str, p: &Value) -> Option<Re
 }
 
 pub fn ui_enabled(app: &LightcraftApp, id: &str) -> bool {
+    if crate::apple_photos::ui_allowed(app, id).is_err() {
+        return false;
+    }
     match id {
-        "file.applePhotos" => cfg!(target_os = "macos"),
+        "file.applePhotos" => cfg!(target_os = "macos") && app.session.apple_library.is_some(),
         "dialog.contactSheet" | "app.contactSheet" => !cfg!(target_arch = "wasm32") && app.session.active().is_some() && app.export.is_none(),
         s if s.starts_with("panel.") || s.starts_with("tool.") || s.starts_with("section.") => app.session.active().is_some() || s == "panel.close",
         "app.export" | "dialog.export" | "dialog.createPreset" | "dialog.rename" | "dialog.captureTime" | "dialog.copySettings" => {

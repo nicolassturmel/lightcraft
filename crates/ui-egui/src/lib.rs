@@ -350,9 +350,14 @@ impl LightcraftApp {
     pub fn new(mut session: Session, services: Services) -> Self {
         // AI mask requests run on the model's worker; frames apply their results (never wait)
         session.segmenter.background = true;
+        let ui = if session.apple_library.is_some() {
+            UiState { left_panel: true, view: state::ViewMode::PhotoGrid, ..Default::default() }
+        } else {
+            UiState::default()
+        };
         Self {
             session,
-            ui: UiState::default(),
+            ui,
             services,
             renderer: render::Renderer::default(),
             perf: Perf::default(),
@@ -433,6 +438,7 @@ impl LightcraftApp {
 
     /// Run a UI or engine command by id. The single entry point for every frontend path.
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        apple_photos::ui_allowed(self, id)?;
         if let Some(result) = apple_photos::intercept(self, id, &params) {
             return result;
         }
@@ -866,6 +872,7 @@ impl LightcraftApp {
         import::tick(self, ctx);
         lightroom_import::tick(self, ctx);
         tasks::poll(self, ctx);
+        apple_photos::tick(self, ctx);
         self.preview_build_status(ctx);
         self.save_status(ctx);
         self.slideshow_tick(ctx);

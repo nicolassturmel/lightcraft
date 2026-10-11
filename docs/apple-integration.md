@@ -1,114 +1,139 @@
 # Apple Photos, Apple RAW and Vision
 
-This fork adds Apple system services on macOS. The portable editor, catalogue and rendering
-pipeline remain Rust. An isolated Swift helper calls PhotoKit, Core Image RAW and Vision over
-a bounded JSON/file protocol. No new Rust unsafe code or third-party native library is involved.
+On macOS, this fork uses the **System Photo Library as its main library**. The normal grid,
+filmstrip and album tree are populated through PhotoKit. Photo ownership and album membership
+belong to Photos. LightCraft stores editable settings and renders edited copies into Photos.
 
-## Build and use
+## Build and launch
 
-Install Rust and Apple's Command Line Tools, then run:
+Install Rust and Apple’s Command Line Tools. Build the locally signed bundle:
 
 ```sh
-cargo run -p lightcraft --features heif
+bash packaging/macos/develop.sh
+open target/apple-development/LightCraft.app
 ```
 
-`heif` enables HEIC originals from Photos. On macOS the helper is compiled and embedded
-automatically. Windows, Linux and WebAssembly retain the portable pipeline. For a release app,
-use `packaging/macos/package.sh --arch aarch64` (or `universal` with both Rust targets installed).
-The bundle declares its Photos usage and contains a separately signed helper. This fork uses
-`com.nicolassturmel.lightcraft` as its bundle identifier, distinct from upstream.
-
-For a local app without notarization or a DMG, run `bash packaging/macos/develop.sh`, then open
-`target/apple-development/LightCraft.app`. This bundles the Photos usage description and signs
-both executables locally, including when only Apple's Command Line Tools are installed.
-For PhotoKit, launch that bundle through Finder or `open target/apple-development/LightCraft.app`.
-Executing its binary directly from a terminal or automation host can make macOS attribute
-the Photos permission to that host instead of LightCraft. Restart after changing permission.
+The helper is compiled from `crates/apple/native/AppleBridge.swift`, bundled and signed alongside
+the Rust executable. A local ad-hoc signature is suitable for development; distributed builds
+need Apple signing and notarization. The app identifier is `com.nicolassturmel.lightcraft`.
+Launch through Finder or `open` so macOS attributes Photos consent to LightCraft. Launching a
+binary directly from a terminal or automation host can attribute consent to that host.
 
 | Service | API | Minimum macOS |
 |---|---|---|
-| System Photo Library | PhotoKit | 11 |
-| CR3 decoding | `CIRAWFilter` | 12 |
+| System Photo Library and edited copies | PhotoKit | 11 |
+| Photos image decoding and CR3 | Core Image / `CIRAWFilter` | 12 |
 | Subject/background masks | `VNGenerateForegroundInstanceMaskRequest` | 14 |
 
-## Apple Photos
+Normal macOS launches use Photos automatically, including when old UI preferences contain a
+file-library path. `--library DIR` or an explicit `LIGHTCRAFT_LIBRARY` environment variable opens
+a legacy file catalogue. `--memory` / `--demo` provides a throwaway test session. Other platforms
+retain the portable Rust catalogue and rendering pipeline.
 
-Open **File → Apple Photos…**, allow the macOS Photos request, choose an album and select up
-to 200 originals per import. The browser is paginated and shows names, dates, dimensions, RAW
-status and favourites. Reading and copying happen in background tasks. Limited authorization
-shows only the assets permitted by macOS. Denied access can be changed in System Settings →
-Privacy & Security → Photos.
+## Main library
 
-PhotoKit opens the **System Photo Library**, including iCloud assets. No private Photos database
-or `.photoslibrary` internals are read. RAW+JPEG pairs prefer the RAW resource, including
-`alternatePhoto`. Live Photos contribute the still image; videos are excluded. Enable
-**Download originals from iCloud when needed** to retrieve originals absent from this Mac.
-Unavailable originals produce individual errors while the remaining selection continues.
+Allow the macOS Photos permission request on first launch. Denied access is reported in the
+main sidebar; allow LightCraft in **System Settings → Privacy & Security → Photos**, then use
+**Refresh Photos**. Limited access projects only the permitted images. No private database or
+`.photoslibrary` internals are read.
 
-Unmodified resources are copied to `Originals/Apple Photos/<asset-resource-hash>/<original-name>`
-inside the open LightCraft library. A completion marker stores the PhotoKit identifier after
-the temporary download and final rename succeed. Reimport uses the same path, so normal
-duplicate detection skips existing photos. EXIF metadata is read by the regular importer;
-Photos-specific favourites and date changes are shown in the browser, not synced to the catalogue.
-LightCraft's edits and ratings stay in its catalogue. This is a browse/import connection,
-not automatic two-way synchronization. No original in Photos is edited or deleted.
+PhotoKit supplies image identifiers, filenames, dimensions, capture dates and user albums,
+including nested folders. Live Photos contribute the still image; videos are excluded. Refresh
+runs in the background at launch, on returning to the app, periodically, and after imports or
+copy saves. Stable native identifiers preserve selection and edit drafts as Photos adds,
+removes or reorganizes images. A malformed or incomplete response keeps the current view.
 
-Changing libraries during copying prevents the result being added to the new catalogue; the
-copies stay in the library where the import began.
+Images are retrieved **on demand** through `PHAssetResourceManager`. RAW+JPEG pairs prefer the
+RAW original, including `alternatePhoto`; rendered assets use their current Photos rendition.
+The public PhotoKit resource API requires a short-lived decode file. Its enclosing temporary
+directory is removed after decoding, errors or bridge timeouts. There is no permanent import of
+Photos originals, no `Originals` directory, and no LightCraft `catalog.log` or `catalog.snap` for
+the Photos session. Render and decoded-source caches are in memory.
 
-## CR3
+Enable **iCloud downloads** in the sidebar to retrieve originals stored only in iCloud. Download
+permission defaults to off each session. Unavailable resources report an error; exports never
+silently substitute a lower-resolution image. **Import Photos…** and dropped image files create
+assets directly in Photos and retain the input files. File imports are limited to 200 per call;
+use Photos for importing folders and managing albums, names, deletions and original metadata.
+Those file-catalogue operations are disabled in LightCraft’s Photos mode.
 
-The macOS import probe and source loader try Core Image before the Rust CR3 decoder. Apple
-performs demosaicing, camera colour conversion and as-shot white balance. Optional tone boosts,
-local tone mapping, sharpening, noise reduction, gamut mapping and lens correction are disabled.
-The bridge exports oriented **extended linear sRGB RGBA float32**, and the engine converts it
-to linear Rec.2020 without clipping highlight values above one. Previews request a reduced
-scale; exports decode full resolution. Camera support depends on installed macOS RAW resources.
+The transient metadata response is capped at 128 MB, 500,000 images and 20,000 collections.
+Exceeding a bound reports an error instead of accepting a partial library.
 
-If Apple rejects a file, the Rust decoder and its existing embedded-preview fallback remain
-available. Mosaic-based AI Enhance uses the Rust mosaic path because Core Image returns RGB,
-not sensor samples. Other file types retain their portable decoder.
+## Originals, settings and edited copies
 
-## Vision masks
+Changing exposure, crop, masks, ratings or annotations changes LightCraft’s **adjustment
+metadata only**. Per-asset JSON files are saved atomically and durably in:
 
-For real photos on macOS, **Subject** and **Background** use Vision foreground-instance
-segmentation. The worker receives an oriented, uncropped source in the catalogue's coordinates.
-All foreground instances are combined into a 512 × 512 coverage grid; background is its
-complement. No subject or an unsupported OS produces an explicit error.
-
-Coverage becomes quantized compressed logits, saved as a `vision` mask shape. Edge refinement,
-inversion, add/subtract/intersect and local adjustments use the existing pipeline. CPU/GPU
-renders and exports sample the stored mask at their own resolutions and through crop geometry.
-Stored masks render on other platforms without Apple services. New masks require macOS 14+.
-Object/Describe retain optional SAM 3, Sky retains its semantic-matte/heuristic implementation,
-and demo images retain procedural selections.
-
-## Commands and lifecycle
-
-The regular command registry exposes:
-
-```json
-{"command":"apple.status","params":{}}
-{"command":"library.applePhotos","params":{"offset":0,"limit":100}}
-{"command":"library.importApplePhotos","params":{"ids":["<PhotoKit asset id>"],"network":false}}
-{"command":"mask.add","params":{"kind":"subject","provider":"apple"}}
-{"command":"mask.addComponent","params":{"kind":"background","op":"subtract"}}
+```
+~/Library/Application Support/LightCraft/Photos Adjustments/<asset-id-hash>.json
 ```
 
-Desktop browse/import/mask commands return `{ "pending": true }`; `ui.inspect` exposes tasks
-and the latest `applePhotos` page. The headless engine executes synchronously. A stored `seg`
-on subject/background replays a mask without Vision; `provider: "heuristic"` explicitly chooses
-the legacy selection. `apple.status` never requests Photos permission.
+`LIGHTCRAFT_CONFIG_DIR` changes this settings location. Each JSON contains its native asset ID,
+develop settings (including stored masks), history, versions, ratings, flags and annotations.
+It contains no photo catalogue, original bytes or album membership. Read errors are reported;
+damaged metadata is preserved. Failed saves keep changes queued and report an unsaved state.
+Native Photos source images, favourites, dates and metadata remain unchanged.
 
-Requests, responses and dimensions are bounded; pixel data uses temporary files. Timed-out
-children are killed and waited on. Cargo builds extract the embedded helper under
-`~/Library/Application Support/LightCraft/Apple/`; bundles use their signed sibling executable.
+Use **Save edited copy to Photos**, **File → Save Edited Copy to Photos**, or **⌘S** to render a
+full-size JPEG at quality 95 into a new asset in the Photos album **LightCraft**. The source’s
+capture date and location are carried onto the copy. Every save creates a new copy. The new
+asset receives `PHAdjustmentData` with the original’s local identifier and the edit recipe,
+using `PHContentEditingOutput(placeholderForCreatedAsset:)` in the same PhotoKit change block.
+Only asset creation requests are issued; no source edit or delete requests are issued.
+If recipe attachment fails after the rendered copy is saved, LightCraft reports that partial
+result and retains the copy and local draft.
 
-## Verification
+Copies display their already-rendered image with default settings. To resume a saved edit,
+select a LightCraft copy and use **Photo → Reopen Photos Adjustments**: the recipe selects its
+original and restores its settings. The image is never developed a second time on top of its
+baked edits. Reopening requires the original to be accessible in the current Photos library;
+PhotoKit local identifiers are specific to that library/device.
 
-`cargo xtask ci` checks formatting, clippy, tests, layering, assets and WebAssembly. Apple tests
-check helper capabilities without requesting access, invalid RAWs and hostile sizes. Stored
-Vision masks are checked for serialization, complement, scaling and crop behavior. The optional
-CC0 Canon R8 C-RAW at `corpus/raw/cr3-canon-r8-craw.cr3` exercises the real system decoder.
-Personal-library authorization and importing an asset require an interactive local smoke test.
-No personal images or Photos identifiers are included in the repository.
+## CR3 and masks
+
+Core Image performs RAW demosaicing, camera colour conversion and as-shot white balance.
+Optional tone boosts, local tone mapping, sharpening, noise reduction, gamut mapping and lens
+correction are disabled. The bridge returns oriented extended-linear-sRGB RGBA float32; the
+engine converts it to linear Rec.2020 without clipping highlight values above one. Preview
+scaling and full-size decoding use the same native RAW decoder. Camera support depends on the
+installed macOS RAW support. The portable file loader falls back to Rust when Apple cannot
+open a CR3; the Photos path reports Apple decoding errors directly.
+
+On macOS 14+, Subject and Background masks use Apple Vision foreground-instance segmentation
+on an oriented, uncropped preview. The result is stored as portable quantized logits in the
+adjustment metadata; Background complements that coverage. Crop, scaling and edge refinement
+use the same stored selection. Demo images and explicit heuristic selections retain the
+portable implementation. No-subject and malformed responses report an error.
+
+## Commands and verification
+
+The desktop dispatches slow native operations through background tasks. Synchronous engine
+commands remain available to CLI/MCP clients:
+
+```json
+{"command":"library.applePhotos","params":{}}
+{"command":"library.photosNetwork","params":{"enabled":true}}
+{"command":"photo.saveApplePhotosCopy","params":{}}
+{"command":"photo.reopenApplePhotosRecipe","params":{}}
+{"command":"library.importIntoApplePhotos","params":{"paths":["/path/to/image.CR3"]}}
+{"command":"mask.add","params":{"kind":"subject"}}
+```
+
+`library.info` identifies the `applePhotos` backend and its ownership/save status. `apple.status`
+reports native capability and consent without requesting access. JSON requests/responses and
+binary buffers are bounded. Timeout, process errors and parent shutdown reap the helper and
+remove temporary decode files.
+
+Regression tests cover native asset identity, nested albums, additions/removals, atomic refresh,
+metadata recovery after restart, failed-save retries, ownership guards and the full-size copy
+render/recipe without requesting access to a personal photothèque. A SHA-256-pinned public CC0
+Canon R8 C-RAW verifies native 6000×4000 decoding and preview colour conversion. UI snapshots
+verify the Photos controls in the normal sidebar. Real PhotoKit writes require an authorized
+macOS session and are not performed against a personal library by the automated tests.
+
+API references: [PhotoKit](https://developer.apple.com/documentation/photos),
+[PHContentEditingOutput](https://developer.apple.com/documentation/photos/phcontenteditingoutput),
+[PHAdjustmentData](https://developer.apple.com/documentation/photos/phadjustmentdata),
+[CIRAWFilter](https://developer.apple.com/documentation/coreimage/cirawfilter),
+[Vision foreground masks](https://developer.apple.com/documentation/vision/vngenerateforegroundinstancemaskrequest).

@@ -43,7 +43,7 @@
   <key>NSRequiresAquaSystemAppearance</key>
   <false/>
   <key>NSPhotoLibraryUsageDescription</key>
-  <string>LightCraft displays your Apple Photos library and imports the original photos you select for non-destructive editing.</string>
+  <string>LightCraft uses your Apple Photos library for browsing and editing, and saves edited copies in a LightCraft album while keeping originals unchanged.</string>
   <key>NSHumanReadableCopyright</key>
   <string>Copyright © the LightCraft authors. MIT OR Apache-2.0.</string>
 

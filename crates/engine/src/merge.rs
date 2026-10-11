@@ -348,7 +348,9 @@ impl Session {
             let p = self.catalog.photo(*id).ok_or(lightcraft_catalog::CatalogError::NoPhoto(*id))?;
             match &p.source {
                 Source::File { path } => sources.push((*id, path.clone())),
-                Source::Demo { .. } => return Err(EngineError::Other(format!("{} is a demo photo; Photo Merge needs photo files", p.file_name))),
+                Source::Demo { .. } | Source::ApplePhotos { .. } => {
+                    return Err(EngineError::Other(format!("{}: Photo Merge currently needs local photo files", p.file_name)));
+                }
             }
         }
         if sources.len() < kind.min_photos() {

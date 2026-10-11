@@ -616,6 +616,9 @@ pub fn start(app: &mut LightcraftApp, d: &ImportDialog) -> Result<Value, String>
 
 /// Start importing `paths` (files or folders) in the background, e.g. dropped on the window.
 pub fn start_paths(app: &mut LightcraftApp, paths: Vec<String>) -> Result<Value, String> {
+    if app.session.apple_library.is_some() {
+        return app.run("library.importIntoApplePhotos", json!({"paths":paths}));
+    }
     busy_synchronizing(app)?;
     if app.import.is_some() || app.scan.as_ref().is_some_and(|t| !t.browse) {
         return Err("an import is running".into());

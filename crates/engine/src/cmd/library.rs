@@ -1371,7 +1371,11 @@ pub fn specs() -> Vec<CommandSpec> {
                 "disk": disk,
             });
             let Some(lib) = &s.library else {
-                return Ok(json!({"persistent": false, "photos": photos, "albums": albums, "cache": cache}));
+                return Ok(if let Some(apple) = &s.apple_library {
+                    json!({"persistent":true, "backend":"applePhotos", "loaded":apple.loaded, "authorization":apple.authorization,
+                        "photos":photos, "albums":albums, "cache":cache, "originalsOwned":false,
+                        "adjustmentsPath":apple.directory, "lastError":apple.error, "unsavedError":apple.edit_error})
+                } else { json!({"persistent": false, "photos": photos, "albums": albums, "cache": cache}) });
             };
             let j = lib.journal();
             Ok(json!({

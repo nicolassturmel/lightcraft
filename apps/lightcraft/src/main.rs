@@ -588,7 +588,8 @@ fn open_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_demo: boo
     (s, problem)
 }
 
-/// The persistent library session, or with `--memory` an in-memory one (demo photos).
+/// macOS defaults to the System Photo Library; an explicit directory opens a legacy catalogue.
+/// `--memory` provides an in-memory session for demos and automated tests.
 ///
 /// If the library can't be opened the session is empty and in memory — never seeded with the
 /// demo photos, never written anywhere — and the problem is returned: the window then says so
@@ -596,6 +597,17 @@ fn open_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_demo: boo
 fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_demo: bool) -> (Session, Option<LibraryProblem>) {
     if in_memory {
         return (if seed_demo { Session::with_demo() } else { Session::new() }.with_fs().with_default_denoise_models().with_system_clock(), None);
+    }
+    #[cfg(target_os = "macos")]
+    if dir.is_none() {
+        return (
+            Session::new()
+                .with_fs()
+                .with_default_denoise_models()
+                .with_system_clock()
+                .with_apple_photos(lightcraft_engine::config::config_dir().map(|d| d.join("Photos Adjustments"))),
+            None,
+        );
     }
     let unopened = || Session::new().with_fs().with_default_denoise_models().with_system_clock();
     let Some(dir) = dir else {
@@ -629,7 +641,7 @@ lightcraft — photo library + raw developer
 USAGE: lightcraft [OPTIONS] [FILES/FOLDERS…]   (files and folders are imported)
 
 OPTIONS:
-  --library DIR    open (or create) this library (default: ~/Pictures/LightCraft Library; env LIGHTCRAFT_LIBRARY)
+  --library DIR    open an explicit file catalogue (macOS default: Apple Photos; other systems: ~/Pictures/LightCraft Library; env LIGHTCRAFT_LIBRARY)
   --no-demo        don't seed a new library with the procedural demo photos
   --memory         throwaway in-memory session (alias --demo); nothing is saved
   --control PORT   serve the JSON-lines control channel on 127.0.0.1:PORT (env LIGHTCRAFT_CONTROL_PORT;
@@ -759,15 +771,19 @@ fn main() -> eframe::Result {
     if let Some(ui) = &prefs {
         lightcraft_ui_egui::i18n::set_language(ui.language);
     }
-    // --library, else the library last opened from Settings, else the default location
-    let library_dir = library_dir.or_else(|| {
-        prefs
-            .as_ref()
-            .map(|u| u.settings.library_path.clone())
-            .filter(|p| !p.is_empty() && std::env::var_os("LIGHTCRAFT_LIBRARY").is_none())
-            .map(Into::into)
-    });
-    let library_dir = library_dir.or_else(lightcraft_engine::library::default_dir);
+    // macOS uses Photos by default. Only an explicit --library or env override opens a legacy catalogue.
+    #[cfg(target_os = "macos")]
+    let library_dir = library_dir.or_else(|| std::env::var_os("LIGHTCRAFT_LIBRARY").filter(|s| !s.is_empty()).map(Into::into));
+    #[cfg(not(target_os = "macos"))]
+    let library_dir = library_dir
+        .or_else(|| {
+            prefs
+                .as_ref()
+                .map(|u| u.settings.library_path.clone())
+                .filter(|p| !p.is_empty() && std::env::var_os("LIGHTCRAFT_LIBRARY").is_none())
+                .map(Into::into)
+        })
+        .or_else(lightcraft_engine::library::default_dir);
     // GPU compute: off if the preference says so, or if the last launch died creating the device
     // (issue #136) — before anything can create it
     let gpu_crash = gpu_crash_check(in_memory);
@@ -884,6 +900,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_launch_defaults_to_photos_without_opening_or_creating_a_file_catalogue() {
+        let (session, problem) = open_library_session(false, None, true);
+        assert!(problem.is_none());
+        assert!(session.apple_library.is_some());
+        assert!(session.library.is_none());
+        assert_eq!(session.catalog.len(), 0);
+        assert!(!session.apple_library.as_ref().unwrap().loaded);
     }
 
     /// Issue #374: launch arguments that would walk a whole drive or home folder are reported,

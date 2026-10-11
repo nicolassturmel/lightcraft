@@ -311,6 +311,7 @@ impl Session {
         static LOADS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         catalog.revision = LOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed).wrapping_add(1) << 32;
         self.catalog = catalog;
+        self.apple_library = None;
         self.library_generation = crate::LIBRARY_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.undo.clear();
         self.redo.clear();
@@ -432,6 +433,9 @@ impl Session {
     /// Called after every top-level command; cheap when nothing changed. Fails (with
     /// [`EngineError::NotSaved`]) only when the queued ops couldn't be written; they stay queued.
     pub fn persist(&mut self) -> Result<()> {
+        if self.apple_library.is_some() {
+            return self.persist_photos();
+        }
         let Some(lib) = self.library.as_mut() else { return Ok(()) };
         if !self.pending_log.is_empty() {
             if let Err(e) = lib.journal.append(&self.pending_log) {
@@ -477,8 +481,13 @@ impl Session {
     /// Persist if commands left ops pending (cheap; frontends call it once per frame for state
     /// changed outside [`Session::execute`]).
     pub fn persist_if_dirty(&mut self) {
-        let backing_off = self.library.as_ref().and_then(|l| l.retry_at).is_some_and(|t| web_time::Instant::now() < t);
-        if self.library.is_some() && !self.pending_log.is_empty() && !backing_off {
+        let backing_off = self
+            .library
+            .as_ref()
+            .and_then(|l| l.retry_at)
+            .or_else(|| self.apple_library.as_ref().and_then(|l| l.retry_at))
+            .is_some_and(|t| web_time::Instant::now() < t);
+        if (self.library.is_some() || self.apple_library.is_some()) && !self.pending_log.is_empty() && !backing_off {
             let _ = self.persist();
         } else if let Some(lib) = self.library.as_mut() {
             poll_compaction(lib);
@@ -489,6 +498,9 @@ impl Session {
     /// queued ops and why (`None` when everything is saved, or no library is open). Retried by
     /// every command and by [`Session::persist_if_dirty`].
     pub fn unsaved(&self) -> Option<(usize, &str)> {
+        if let Some(photos) = &self.apple_library {
+            return photos.edit_error.as_deref().map(|e| (self.pending_log.len(), e));
+        }
         let lib = self.library.as_ref()?;
         lib.unsaved_error.as_deref().filter(|_| !self.pending_log.is_empty()).map(|e| (self.pending_log.len(), e))
     }
@@ -499,6 +511,10 @@ impl Session {
     /// holding everything in memory, so it saves those ops too (the log handle may be the only
     /// thing that's broken). Fails only if nothing could be saved; the ops then stay queued.
     pub fn close_library(&mut self) -> Result<()> {
+        if self.apple_library.is_some() {
+            let _ = self.end_interaction();
+            return self.persist();
+        }
         if self.library.is_none() {
             return Ok(());
         }

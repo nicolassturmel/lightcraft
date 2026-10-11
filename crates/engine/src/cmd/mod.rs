@@ -77,7 +77,7 @@ pub struct CommandInfo {
 
 impl CommandSpec {
     pub fn info(&self, s: &Session) -> CommandInfo {
-        let e = (self.enabled)(s);
+        let e = crate::apple::command_allowed(s, self.id).and_then(|()| (self.enabled)(s));
         CommandInfo {
             id: self.id,
             label: self.label,

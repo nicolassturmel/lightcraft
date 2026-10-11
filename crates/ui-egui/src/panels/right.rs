@@ -605,6 +605,7 @@ fn info(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             let path = match &p.source {
                 lightcraft_catalog::Source::File { path } => path.clone(),
                 lightcraft_catalog::Source::Demo { .. } => crate::i18n::tr("Generated demo photo").into(),
+                lightcraft_catalog::Source::ApplePhotos { .. } => "Apple Photos — System Photo Library".into(),
             };
             ui.add(egui::Label::new(egui::RichText::new(path).size(12.0).color(t.text_label)).truncate());
             if crate::menus::ui_enabled(app, "app.showInFinder") {

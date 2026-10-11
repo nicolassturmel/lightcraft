@@ -272,7 +272,7 @@ pub fn expand_tokens(template: &str, p: &Photo, seq: usize, seq_width: usize) ->
                 Source::File { path } => {
                     Path::new(path).parent().and_then(Path::file_name).map(|f| f.to_string_lossy().to_string()).unwrap_or_default()
                 }
-                Source::Demo { .. } => String::new(),
+                Source::Demo { .. } | Source::ApplePhotos { .. } => String::new(),
             },
             "camera" => p.meta.camera.clone(),
             "lens" => p.meta.lens.clone(),
@@ -609,6 +609,7 @@ fn plan_rename_core(
                     k += 1;
                 }
             }
+            Source::ApplePhotos { .. } => continue,
             Source::Demo { .. } => {
                 let mut k = 0;
                 loop {
@@ -657,6 +658,7 @@ impl Session {
         for p in self.catalog.photos() {
             let plan = match &p.source {
                 Source::File { path } => by_path.get(path.as_str()).copied(),
+                Source::ApplePhotos { .. } => None,
                 Source::Demo { .. } => plans.iter().find(|x| x.id == p.id.0 && x.from_path.is_none()),
             };
             let Some(plan) = plan else { continue };
@@ -957,7 +959,7 @@ mod tests {
         // the catalog matches the disk
         let path = |s: &Session, id: u64| match &s.catalog.photo(PhotoId(id)).unwrap().source {
             Source::File { path } => path.replace('\\', "/"),
-            Source::Demo { .. } => String::new(),
+            Source::Demo { .. } | Source::ApplePhotos { .. } => String::new(),
         };
         assert_eq!(path(&s, 1), "/p/Trip-1.jpg");
         assert_eq!(s.catalog.photo(PhotoId(1)).unwrap().file_name, "Trip-1.jpg");

@@ -69,7 +69,7 @@ pub fn shortcut_of<'a>(keymap: &'a Keymap, id: &str) -> Option<&'a str> {
 }
 
 /// Engine commands that intentionally share a key and are disambiguated by context in [`handle`].
-pub const CONTEXTUAL: &[(&str, &str)] = &[("photo.reject", "crop.rotateAspect")];
+pub const CONTEXTUAL: &[(&str, &str)] = &[("photo.reject", "crop.rotateAspect"), ("photo.saveApplePhotosCopy", "photo.saveMetadataToFile")];
 
 /// Commands other than `id` whose shortcut is the key `sc` (contextual partners excepted).
 pub fn conflicts(keymap: &Keymap, id: &str, sc: &str) -> Vec<&'static str> {
@@ -495,6 +495,12 @@ pub fn handle(app: &mut LightcraftApp, ctx: &egui::Context) {
                 }
                 continue;
             }
+            // Cmd+S saves a Photos copy or file-sidecar metadata according to the active backend.
+            if (f == "photo.saveMetadataToFile" && app.session.apple_library.is_some())
+                || (f == "photo.saveApplePhotosCopy" && app.session.apple_library.is_none())
+            {
+                continue;
+            }
             // X is both reject (library) and swap crop aspect (crop tool)
             if f == "photo.reject" && app.ui.right == crate::state::RightPanel::Crop {
                 let _ = app.run("crop.rotateAspect", json!({}));
@@ -862,6 +868,7 @@ mod tests {
     fn contextual_partners_are_not_conflicts() {
         let keymap = Keymap::new();
         assert!(conflicts(&keymap, "photo.reject", "X").is_empty());
+        assert!(conflicts(&keymap, "photo.saveApplePhotosCopy", "Cmd+S").is_empty());
     }
 
     /// No key fires two different actions (a UI command may shadow the engine command it wraps).

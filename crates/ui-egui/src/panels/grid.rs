@@ -190,6 +190,8 @@ fn show_inner(app: &mut LightcraftApp, ui: &mut egui::Ui) {
                 "No matching photos",
                 "A filter is hiding this view's photos: change it, or clear it (View → Clear Filters)",
             );
+        } else if let Some((title, body)) = crate::apple_photos::empty_library_message(app) {
+            super::empty_message(ui, ui.max_rect(), title, body);
         } else if app.session.source == lightcraft_engine::LibrarySource::Folder {
             super::empty_message(ui, ui.max_rect(), "No photos in this folder", "Turn on Include subfolders, or pick another folder under Local");
         } else {

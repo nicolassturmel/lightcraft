@@ -176,8 +176,9 @@ fn bad_crc_is_still_a_torn_tail() {
 fn op_variants_are_versioned() {
     fn since(op: &Op) -> u32 {
         match op {
-            Op::AddPhoto { .. }
-            | Op::RemovePhoto { .. }
+            Op::AddPhoto { photo } => source_since(&photo.source),
+            Op::SetFile { source, .. } | Op::Relink { source, .. } => source_since(source),
+            Op::RemovePhoto { .. }
             | Op::SetRating { .. }
             | Op::SetFlag { .. }
             | Op::SetLabel { .. }
@@ -200,8 +201,6 @@ fn op_variants_are_versioned() {
             | Op::SetStack { .. }
             | Op::SetCaptured { .. }
             | Op::SetAnalysis { .. }
-            | Op::SetFile { .. }
-            | Op::Relink { .. }
             | Op::SetContent { .. }
             | Op::SetLabelName { .. }
             | Op::Batch { .. } => 1,
@@ -212,6 +211,34 @@ fn op_variants_are_versioned() {
             Op::SetFolderRecord { .. } => 6,
         }
     }
-    let newest = since(&Op::SetFolderRecord { folder: "/".into(), record: None });
-    assert_eq!(newest, VERSION, "the newest op's version must be the current format version");
+    fn source_since(source: &Source) -> u32 {
+        match source {
+            Source::File { .. } | Source::Demo { .. } => 1,
+            Source::ApplePhotos { .. } => 7,
+        }
+    }
+    let newest_op = since(&Op::SetFolderRecord { folder: "/".into(), record: None });
+    let newest_source = since(&Op::AddPhoto {
+        photo: Box::new(Photo::new(
+            PhotoId(1),
+            Source::ApplePhotos { asset: "fixture".into(), revision: "v1".into() },
+            "p.jpg",
+            "JPEG",
+            4,
+            3,
+            "2026-01-01",
+        )),
+    });
+    assert_eq!(newest_op.max(newest_source), VERSION, "the newest serialized op/source must be the current format version");
+}
+
+#[test]
+fn photos_source_identity_roundtrips_and_missing_revision_defaults() {
+    let source = Source::ApplePhotos { asset: "fixture/L0/001".into(), revision: "v1".into() };
+    let serialized = serde_json::to_value(&source).unwrap();
+    assert_eq!(serialized["type"], "applephotos");
+    assert_eq!(serde_json::from_value::<Source>(serialized).unwrap(), source);
+    let old = serde_json::json!({"type":"applephotos", "asset":"fixture"});
+    assert_eq!(serde_json::from_value::<Source>(old).unwrap(), Source::ApplePhotos { asset: "fixture".into(), revision: String::new() });
+    assert_eq!(serde_json::from_value::<Source>(serde_json::json!({"type":"file", "path":"p.jpg"})).unwrap(), Source::File { path: "p.jpg".into() });
 }

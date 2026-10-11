@@ -108,15 +108,19 @@ fn general_tab(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
         crate::i18n::set_language(app.ui.language);
     });
     heading(ui, t, crate::i18n::tr("Library"));
-    let location = match &app.session.library {
-        Some(l) => l.dir.display().to_string(),
-        None => crate::i18n::tr("In memory — nothing is saved").to_string(),
+    let location = if app.session.apple_library.is_some() {
+        "Apple Photos — System Photo Library".into()
+    } else {
+        match &app.session.library {
+            Some(l) => l.dir.display().to_string(),
+            None => crate::i18n::tr("In memory — nothing is saved").to_string(),
+        }
     };
     row(ui, t, crate::i18n::tr("Location"), |ui| {
         ui.label(RichText::new(location).color(t.text));
     });
     row(ui, t, "", |ui| {
-        let can = app.services.pick_folder.is_some();
+        let can = app.services.pick_folder.is_some() && app.session.apple_library.is_none();
         let r = ui.add_enabled(can, egui::Button::new(crate::i18n::tr("Open Library…")));
         register(ui.ctx(), "button:settingsOpenLibrary", r.rect);
         if r.clicked() {
