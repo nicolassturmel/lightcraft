@@ -810,6 +810,68 @@ pub fn resolve_vision(session: &mut Session, params: &Value, shape: &mut MaskSha
     Ok(())
 }
 
+/// Refresh only a saved sky component. Its image, settings and library revision are pinned
+/// until acceptance; other components and local adjustments remain part of the same recipe.
+pub struct VisionSkyUpdate {
+    source: SourceRef,
+    photo: PhotoId,
+    generation: u64,
+    content: String,
+    mask: u32,
+    component: usize,
+    before: Arc<DevelopSettings>,
+    edge: f64,
+}
+
+impl VisionSkyUpdate {
+    pub fn prepare(session: &mut Session, params: &Value) -> Result<Self, String> {
+        let photo = session.active().ok_or("no active photo")?;
+        let mask = match params.get("id") {
+            Some(id) => id.as_u64().and_then(|id| u32::try_from(id).ok()).ok_or("invalid mask id")?,
+            None => session.active_mask.ok_or("no mask selected")?,
+        };
+        let before = session.develop_of(photo).ok_or("no active photo settings")?;
+        let selected = before.masks.iter().find(|m| m.id == mask).ok_or("the selected mask no longer exists")?;
+        let component = match params.get("component") {
+            Some(index) => index.as_u64().and_then(|i| usize::try_from(i).ok()).ok_or("invalid sky component index")?,
+            None => selected
+                .components
+                .iter()
+                .rposition(|c| matches!(c.shape, MaskShape::Sky | MaskShape::SkySelection { .. }))
+                .ok_or("the mask has no Sky selection")?,
+        };
+        let edge = match selected.components.get(component).map(|c| &c.shape) {
+            Some(MaskShape::SkySelection { edge, .. }) => *edge,
+            Some(MaskShape::Sky) => 0.0,
+            _ => return Err("not a Sky component".into()),
+        };
+        let source = vision_source(session)?;
+        let content = crate::media::content_key(session.catalog.photo(photo).ok_or("no such photo")?);
+        Ok(Self { source, photo, generation: session.library_generation(), content, mask, component, before, edge })
+    }
+
+    pub fn run(&self) -> Result<SegMask, String> {
+        vision_sky_selection(self.source.clone())
+    }
+
+    pub fn accept(self, session: &mut Session, seg: SegMask) -> Result<Value, String> {
+        let current = session.catalog.photo(self.photo).map(|p| crate::media::content_key(p));
+        if session.library_generation() != self.generation
+            || session.active() != Some(self.photo)
+            || current.as_ref() != Some(&self.content)
+            || !session.develop_of(self.photo).is_some_and(|d| Arc::ptr_eq(&d, &self.before))
+        {
+            return Err("Apple Vision selection discarded because the photo or mask changed".into());
+        }
+        if seg.logits().is_none() {
+            return Err("invalid Apple Vision sky mask".into());
+        }
+        let shape = MaskShape::SkySelection { seg, edge: self.edge };
+        session.execute("mask.update", &json!({"id":self.mask, "component":self.component, "shape":shape})).map_err(|e| e.to_string())?;
+        Ok(json!({"updated":true, "provider":"appleVision"}))
+    }
+}
+
 /// A click's immutable target. Results must not overwrite a changed photo, mask, undo or library.
 pub struct VisionObjectClick {
     source: SourceRef,
@@ -1153,6 +1215,75 @@ mod tests {
         s.execute("mask.add", &json!({"kind":"sky", "seg":seg})).unwrap();
         assert!(matches!(s.develop_of(s.active().unwrap()).unwrap().masks.last().unwrap().components[0].shape, MaskShape::SkySelection { .. }));
         assert!(!s.segmenter.busy() && !s.segmenter.loaded());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sky_updates_preserve_manual_edits_and_reject_stale_results() {
+        let seg = || coverage_to_seg(2, &[1.0, 0.0, 1.0, 0.0]).unwrap();
+        let setup = || {
+            let mut s = photos_session();
+            s.execute("mask.add", &json!({"kind":"sky", "seg":seg(), "edge":23.0, "name":"Coastal sky"})).unwrap();
+            s.execute("mask.adjust", &json!({"values":{"temp":25.0,"exposure":0.7}})).unwrap();
+            s.execute("mask.component", &json!({"component":0, "action":"invert"})).unwrap();
+            s.execute("mask.addComponent", &json!({"kind":"brush", "op":"subtract"})).unwrap();
+            s.execute("mask.brushStroke", &json!({"points":[[0.2,0.4],[0.3,0.5]]})).unwrap();
+            s
+        };
+        let mut s = setup();
+        let id = s.active().unwrap();
+        let original = s.catalog.photo(id).unwrap().source.clone();
+        let before = s.develop_of(id).unwrap();
+        let job = VisionSkyUpdate::prepare(&mut s, &json!({"id":1,"component":0})).unwrap();
+        assert!(matches!(job.source, SourceRef::ApplePhotos { network: false, .. }));
+        let new_seg = coverage_to_seg(2, &[1.0, 1.0, 0.0, 0.0]).unwrap();
+        assert_eq!(job.accept(&mut s, new_seg.clone()).unwrap(), json!({"updated":true,"provider":"appleVision"}));
+        let mut expected = (*before).clone();
+        expected.masks[0].components[0].shape = MaskShape::SkySelection { seg: new_seg, edge: 23.0 };
+        let after = s.develop_of(id).unwrap();
+        assert_eq!(*after, expected, "only the saved sky coverage changes");
+        assert_eq!(s.catalog.photo(id).unwrap().source, original);
+        assert_eq!(serde_json::from_value::<DevelopSettings>(serde_json::to_value(&expected).unwrap()).unwrap(), expected);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.develop_of(id).unwrap(), before);
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(s.develop_of(id).unwrap(), after);
+        for params in [json!({"id":u64::MAX}), json!({"component":1}), json!({"component":u64::MAX}), json!({"component":-1})] {
+            assert!(VisionSkyUpdate::prepare(&mut s, &params).is_err());
+        }
+        let job = VisionSkyUpdate::prepare(&mut s, &json!({})).unwrap();
+        let mut invalid = seg();
+        invalid.data.clear();
+        let revision = s.catalog.revision;
+        assert!(job.accept(&mut s, invalid).unwrap_err().contains("invalid"));
+        assert_eq!(s.catalog.revision, revision);
+        for change in 0..5 {
+            let mut s = setup();
+            let job = VisionSkyUpdate::prepare(&mut s, &json!({})).unwrap();
+            match change {
+                0 => {
+                    s.execute("mask.adjust", &json!({"values":{"temp":50.0}})).unwrap();
+                }
+                1 => {
+                    s.execute("edit.undo", &json!({})).unwrap();
+                }
+                2 => {
+                    s.selection = Selection::default();
+                }
+                3 => {
+                    let mut changed = projected(&["a", "b"], None);
+                    changed.snapshot.assets[0].revision = "replaced-original".into();
+                    s.apply_photos_snapshot(changed).unwrap();
+                }
+                _ => {
+                    s = s.with_apple_photos(None);
+                    s.apply_photos_snapshot(projected(&["a", "b"], None)).unwrap();
+                }
+            }
+            let revision = s.catalog.revision;
+            assert!(job.accept(&mut s, seg()).unwrap_err().contains("discarded"), "change {change}");
+            assert_eq!(s.catalog.revision, revision);
+        }
     }
 
     #[cfg(target_os = "macos")]

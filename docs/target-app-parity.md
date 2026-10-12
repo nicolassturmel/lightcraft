@@ -1,6 +1,6 @@
 # Target-app parity: LightCraft vs Adobe Lightroom
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-11 · **Change:** minor (Apple fork sky/preset fixes recorded; scores unchanged) · **Target:** Adobe Lightroom Classic 15.5 (August 2026) and Lightroom 9.6 (desktop)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (Apple fork sky contour/refresh fixes recorded; scores unchanged) · **Target:** Adobe Lightroom Classic 15.5 (August 2026) and Lightroom 9.6 (desktop)
 
 The authoritative assessment of how close LightCraft is to Lightroom. The row-by-row checklist is
 [parity-checklist.md](parity-checklist.md); the ranked work list is [gaps.md](gaps.md); deep areas
@@ -90,7 +90,7 @@ search embeddings; generative remove runs in Adobe's cloud.
 
 | Feature | LightCraft | Status |
 |---|---|---|
-| Subject / Sky / Background masks | portable classical heuristics / DNG semantic mattes; macOS fork: Vision foreground masks and hybrid foreground-protected sky/horizon refinement, saved as logits; complex-scene semantic sky coverage remains open | 🟡 |
+| Subject / Sky / Background masks | portable classical heuristics / DNG semantic mattes; macOS fork: Vision foreground masks and hybrid sky/ground contour competition with protected foreground, saved as logits; explicit refresh retains local edits; complex-scene semantic sky coverage remains open | 🟡 |
 | People (faces, body, hair, skin…) and Landscape masks | — | ⬜ |
 | Object / Describe masks | SAM 3 in pure Rust (Metal / CPU); opt-in 3.4 GB download, no mirror configured | 🟡 |
 | Depth range mask, Lens Blur | — | ⬜ |
@@ -297,6 +297,7 @@ P2 items 12–25 h; look tuning, performance, packaging, hardening 25–45 h.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-12 | minor | Native sky contour competition excludes top-touching facades/poles; explicit updates retain edits and are undoable; semantic gap and scores unchanged. |
 | 2026-10-11 | minor | Apple fork sky refinement and reversible preset selection documented; no claim of dedicated semantic sky parity or score increase. |
 | 2026-10-10 | minor | RAW measured model by model (raw-parity.md): RAW decoding (76%) and colour (35%) are explicit rows of the full sum (59% → 61%); mainstream uses the use-weighted 84% plus a ×0.85 colour discount (51% → 49%); essentials uses 84% × colour 0.75 (63% → 64%); beta ~14 points |
 | 2026-10-10 | minor | Full number restored to an additive weighted sum over the dimensions (~59%; method aligned with the standard, no new evidence); hours to ~95% for each of the three audiences; beta distance ~16 points |

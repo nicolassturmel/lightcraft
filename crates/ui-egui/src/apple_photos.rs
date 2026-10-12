@@ -30,6 +30,7 @@ pub fn intercept(app: &mut LightcraftApp, id: &str, params: &Value) -> Option<Re
         "library.importIntoApplePhotos" => Some(start_import(app, params)),
         "mask.add" | "mask.addComponent" if lightcraft_engine::apple::wants_vision(&app.session, params) => Some(start_mask(app, id, params)),
         "mask.objectPoint" if lightcraft_engine::apple::uses_vision(&app.session) => Some(start_object_click(app, params)),
+        "mask.reselectSky" if lightcraft_engine::apple::uses_vision(&app.session) => Some(start_sky_update(app, params)),
         _ => None,
     }
 }
@@ -380,6 +381,27 @@ fn start_mask(app: &mut LightcraftApp, command: &str, params: &Value) -> Result<
                 Ok(_) => app.toast(ctx, "Apple Vision mask added"),
                 Err(error) => app.toast_error(ctx, error),
             }
+        },
+    )?;
+    Ok(json!({"pending":true, "provider":"appleVision"}))
+}
+
+fn start_sky_update(app: &mut LightcraftApp, params: &Value) -> Result<Value, String> {
+    if app.tasks.is_running(MASK) {
+        return Err("Apple Vision is selecting. Wait for the selection to finish.".into());
+    }
+    let job = lightcraft_engine::apple::VisionSkyUpdate::prepare(&mut app.session, params)?;
+    crate::tasks::spawn(
+        app,
+        MASK,
+        Some("appleVision"),
+        move || {
+            let result = job.run();
+            (job, result)
+        },
+        move |app, ctx, (job, result)| match result.and_then(|seg| job.accept(&mut app.session, seg)) {
+            Ok(_) => app.toast(ctx, "Sky selection updated"),
+            Err(error) => app.toast_error(ctx, error),
         },
     )?;
     Ok(json!({"pending":true, "provider":"appleVision"}))

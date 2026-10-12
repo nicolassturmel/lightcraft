@@ -131,14 +131,19 @@ empty mask. A click on undetected background reports an error and preserves the 
 Vision can group related objects into one instance; use Brush for finer manual corrections.
 
 **Sky** uses a source's embedded semantic sky matte when present. Otherwise it combines Vision's
-foreground protection with sky-colour connectivity from the upper image borders and continuous
-horizon detection, including tilted horizons. It retains neutral clouds and protects detected
-subjects; disconnected blue objects and water below a detected horizon are excluded. The selection
+foreground protection with competing sky/ground connectivity across image edges. Upper-border
+seeds favour smooth regions separated from the ground: neutral facades and street lights touching
+the top are not automatically labelled sky. Vision contours remain barriers even when subject and
+sky colours match. A continuous blue-water horizon anchors water below it without cutting off grey
+cloud banks; bright waves cannot disconnect that water from the ground. Neutral clouds are retained. The selection
 is computed from the oriented original preview, independently of exposure, B&W, presets or crop,
 then stored as `skySelection` logits with the same Edge control as other native masks. A landscape
 without a Vision foreground subject is valid. This is a hybrid refinement, **not a dedicated
 semantic sky model**: ambiguous indoor scenes, weak horizons and complex landscapes can still
-need Add/Subtract Brush corrections. No SAM download is used.
+need Add/Subtract Brush corrections. No SAM download is used. **Update Sky Selection** refreshes
+an existing sky component from the original using the current method, keeping its Edge, local
+adjustments, name, inversion, operation and other components (including Brush corrections). This is
+an undoable description edit; saved selections are never silently regenerated during rendering.
 
 The result is stored as portable quantized logits in the adjustment metadata. Crop, scaling
 and edge refinement use that stored selection; rendering and export never require a model.
@@ -182,7 +187,8 @@ stays disabled, and stale object results cannot write adjustments. The CC0 R8 fi
 real Vision inference, click/mask orientation, exclusion of the sole selected instance, and
 rejection of a background click without touching the personal Photos library.
 Sky tests cover clouds, tilted horizons, blue water, foreground protection, no-sky inputs,
-exposure variation and native inference without a foreground subject. Preset tests cover switching,
+exposure variation, top-touching facades/street lights, bright waves and native inference without
+a foreground subject. Sky-update tests cover retained adjustments, undo/redo and stale-result guards. Preset tests cover switching,
 Amount, per-photo baselines, manual corrections, mask ownership, undo/redo and JSON recovery.
 Real PhotoKit writes require an authorized
 macOS session and are not performed against a personal library by the automated tests.

@@ -500,6 +500,16 @@ fn overlay_options(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     }
 }
 
+fn update_sky_button(app: &mut LightcraftApp, ui: &mut egui::Ui, comp: usize) {
+    if lightcraft_engine::apple::uses_vision(&app.session) {
+        let update = ui.button(crate::i18n::tr("Update Sky Selection"));
+        register(ui.ctx(), format!("button:updateSky:{comp}"), update.rect);
+        if update.clicked() {
+            let _ = app.run("mask.reselectSky", json!({"id": app.session.active_mask, "component": comp}));
+        }
+    }
+}
+
 /// Controls for a range component: the selected range (two handles over a dark → light bar),
 /// Smoothness, and Show Luminance Map; colour ranges get Refine.
 fn range_controls(app: &mut LightcraftApp, ui: &mut egui::Ui, comp: usize, shape: &MaskShape) {
@@ -508,6 +518,7 @@ fn range_controls(app: &mut LightcraftApp, ui: &mut egui::Ui, comp: usize, shape
         let _ = app.run("mask.update", json!({"component": comp, "shape": shape}));
     };
     match shape {
+        MaskShape::Sky => update_sky_button(app, ui, comp),
         MaskShape::LuminanceRange { lo, hi, lo_feather, hi_feather } => {
             ui.label(egui::RichText::new(crate::i18n::tr("Select Luminance Range")).color(t.text_dim).size(11.5));
             let (lo, hi) = (*lo, *hi);
@@ -612,6 +623,9 @@ fn range_controls(app: &mut LightcraftApp, ui: &mut egui::Ui, comp: usize, shape
                 app.run("mask.update", json!({"component": comp, "shape": s}))
             });
             ui.label(egui::RichText::new(crate::i18n::tr("− harder border · + softer border")).color(t.text_dim).size(11.0));
+            if matches!(shape, MaskShape::SkySelection { .. }) {
+                update_sky_button(app, ui, comp);
+            }
         }
         MaskShape::ColorRange { samples, refine } => {
             ui.horizontal(|ui| {

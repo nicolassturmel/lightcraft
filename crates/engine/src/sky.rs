@@ -1,12 +1,12 @@
 //! Original-preview sky selection. Vision supplies foreground protection; this pass separates
-//! the remaining sky from water/ground using border colour, connectivity and horizon edges.
+//! the remaining sky from buildings/water/ground using competing edge connectivity.
 //! It is deliberately not advertised as a semantic sky model: ambiguous scenes need Brush.
 
 use lightcraft_raster::{
     Plane, Rgb32f,
     resample::{self, Filter},
 };
-use std::collections::VecDeque;
+use std::{cmp::Reverse, collections::BinaryHeap};
 
 const EDGE: usize = 512;
 
@@ -14,6 +14,7 @@ const EDGE: usize = 512;
 struct Feature {
     lab: [f32; 3],
     plausible: bool,
+    blue_saturated: bool,
 }
 
 fn difference(a: Feature, b: Feature) -> f32 {
@@ -26,7 +27,7 @@ fn at(features: &[Feature], width: usize, height: usize, x: usize, y: usize) -> 
 
 /// A continuous horizon (including a tilted sea horizon) must have an edge across most of the
 /// frame. Isolated cloud edges / roof edges cannot set a global horizontal cut.
-fn horizon(features: &[Feature], foreground: &Plane) -> Option<(f32, f32)> {
+fn water_horizon(features: &[Feature], foreground: &Plane) -> Option<(f32, f32)> {
     let (w, h) = (foreground.width, foreground.height);
     let band = (h / 100).max(1);
     let margin = (h / 30).max(band + 1);
@@ -50,7 +51,9 @@ fn horizon(features: &[Feature], foreground: &Plane) -> Option<(f32, f32)> {
                 let y = y as usize;
                 let above = at(features, w, h, x, y - band);
                 let below = at(features, w, h, x, y + band);
-                if !above.plausible || foreground.get(x, y - band) > 0.5 {
+                // A dark cloud bank is still sky. Only use this prior to anchor strongly blue
+                // water, where a bright wave can otherwise isolate it from the bottom border.
+                if !above.plausible || !below.blue_saturated || foreground.get(x, y - band) > 0.5 {
                     continue;
                 }
                 usable += 1;
@@ -71,6 +74,47 @@ fn horizon(features: &[Feature], foreground: &Plane) -> Option<(f32, f32)> {
         }
     }
     (best.0 > 0.026).then_some((best.1, best.2))
+}
+
+/// Minimum edge barrier to any seed. A facade connected to the ground belongs to that side of
+/// its outline, even when it is neutral/blue and reaches the top border. Unlike a permissive
+/// flood fill, a small colour step cannot leak a sky seed through every subsequent wall pixel.
+fn connectivity(edges: &[[u16; 2]], width: usize, seeds: &[bool], traversable: Option<&[bool]>) -> Vec<u16> {
+    let mut costs = vec![u16::MAX; edges.len()];
+    let mut queue = BinaryHeap::new();
+    for (i, seed) in seeds.iter().copied().enumerate() {
+        if seed && let Some(value) = costs.get_mut(i) {
+            *value = 0;
+            queue.push(Reverse((0_u16, i)));
+        }
+    }
+    while let Some(Reverse((cost, i))) = queue.pop() {
+        if costs.get(i).copied() != Some(cost) {
+            continue;
+        }
+        let (x, y) = (i % width, i / width);
+        let here = edges.get(i).copied().unwrap_or_default();
+        let neighbours = [
+            (x.checked_sub(1).map(|_| i - 1), i.checked_sub(1).and_then(|j| edges.get(j)).map(|e| e[0]).unwrap_or(0)),
+            ((x + 1 < width).then_some(i + 1), here[0]),
+            (y.checked_sub(1).map(|_| i - width), i.checked_sub(width).and_then(|j| edges.get(j)).map(|e| e[1]).unwrap_or(0)),
+            (i.checked_add(width).filter(|&j| j < edges.len()), here[1]),
+        ];
+        for (next, edge) in neighbours {
+            let Some(next) = next else { continue };
+            if traversable.is_some_and(|allowed| !allowed.get(next).copied().unwrap_or(false)) {
+                continue;
+            }
+            let value = cost.max(edge);
+            if let Some(previous) = costs.get_mut(next)
+                && value < *previous
+            {
+                *previous = value;
+                queue.push(Reverse((value, next)));
+            }
+        }
+    }
+    costs
 }
 
 /// Coverage in oriented, uncropped source coordinates, stretched to the stored square grid.
@@ -101,46 +145,69 @@ pub(crate) fn selection(source: &Rgb32f, foreground: &Plane) -> Result<Plane, St
             let neutral = (max - min) / max < 0.30;
             let blue = rgb[2] >= rgb[0] * 0.92 && rgb[2] >= rgb[1] * 0.92;
             let warm = rgb[0] >= rgb[1] && rgb[1] >= rgb[2] && rgb[1] > rgb[0] * 0.45 && rgb[2] > rgb[1] * 0.35;
-            Feature { lab: lightcraft_color::perceptual::oklab_from_2020(c.map(|v| v / (1.0 + v))), plausible: neutral || blue || warm }
+            Feature {
+                lab: lightcraft_color::perceptual::oklab_from_2020(c.map(|v| v / (1.0 + v))),
+                plausible: neutral || blue || warm,
+                blue_saturated: blue && (max - min) / max > 0.40,
+            }
         })
         .collect();
-    let boundary = horizon(&features, &foreground);
-    let allowed = |x: usize, y: usize| {
-        let f = at(&features, w, h, x, y);
-        let limit = boundary.map(|(centre, slope)| centre + slope * (x as f32 / w as f32 - 0.5)).unwrap_or(h as f32);
-        f.plausible && f.lab[0] > 0.12 && foreground.get(x, y) < 0.85 && (y as f32 + 0.5) < limit
-    };
+    let allowed: Vec<_> = features.iter().zip(&foreground.data).map(|(f, subject)| f.plausible && f.lab[0] > 0.12 && *subject < 0.85).collect();
+    let edges: Vec<_> = features
+        .iter()
+        .enumerate()
+        .map(|(i, here)| {
+            let (x, y) = (i % w, i / w);
+            [(x + 1, y), (x, y + 1)].map(|(nx, ny)| {
+                let subject_edge = (foreground.get(x, y) - foreground.get(nx.min(w - 1), ny.min(h - 1))).abs() * 0.18;
+                (difference(*here, at(&features, w, h, nx, ny)).max(subject_edge).min(1.0) * 65534.0) as u16
+            })
+        })
+        .collect();
+    let boundary = water_horizon(&features, &foreground);
+    let ground_seeds: Vec<_> = allowed
+        .iter()
+        .enumerate()
+        .map(|(i, ok)| {
+            let (x, y) = (i % w, i / w);
+            !ok || y == h - 1
+                || boundary
+                    .is_some_and(|(centre, slope)| y as f32 >= centre + slope * (x as f32 / w as f32 - 0.5) + ((h / 100).max(1) * 2 + 1) as f32)
+        })
+        .collect();
+    let ground = connectivity(&edges, w, &ground_seeds, None);
+    let border = |i: usize| i / w == 0 || (i / w < (h / 12).max(1) && (i.is_multiple_of(w) || i % w == w - 1));
+    let scores: Vec<_> = features
+        .iter()
+        .enumerate()
+        .map(|(i, &here)| {
+            if !border(i) || !allowed.get(i).copied().unwrap_or(false) {
+                return 0;
+            }
+            // Windows can have a large edge barrier of their own. Their repeated vertical
+            // changes are not evidence of sky: prefer the broad, smooth border regions.
+            let variation =
+                (1..=4).map(|step| difference(here, at(&features, w, h, i % w, i / w + (h / 6).max(1) * step / 4))).fold(0.0_f32, f32::max);
+            ground.get(i).copied().unwrap_or(0).saturating_sub((variation.min(1.0) * 65534.0) as u16)
+        })
+        .collect();
+    let separation = scores.iter().copied().max().unwrap_or(0);
+    // Seed only the border regions separated from the ground, not every plausible top pixel.
+    // This also works when a building occupies most of the top or the horizon is strongly tilted.
+    let threshold = separation.saturating_sub(separation / 8);
+    let flat_sky = ground.iter().copied().max().unwrap_or(0) < 328 && allowed.iter().all(|ok| *ok);
+    let sky_seeds: Vec<_> = allowed
+        .iter()
+        .enumerate()
+        .map(|(i, ok)| *ok && border(i) && (flat_sky || (separation > 0 && scores.get(i).is_some_and(|&v| v >= threshold))))
+        .collect();
+    let sky = connectivity(&edges, w, &sky_seeds, Some(&allowed));
     let mut selected = Plane::new(w, h);
-    let mut queue = VecDeque::new();
-    for x in 0..w {
-        if allowed(x, 0) {
-            if let Some(v) = selected.data.get_mut(x) {
-                *v = 1.0;
-            }
-            queue.push_back((x, 0));
-        }
-    }
-    // Side-border sky remains reachable when a tree or roof covers the very top of the photo.
-    for y in 1..(h / 12).max(1) {
-        for x in [0, w - 1] {
-            if allowed(x, y) {
-                if let Some(v) = selected.data.get_mut(y * w + x) {
-                    *v = 1.0;
-                }
-                queue.push_back((x, y));
-            }
-        }
-    }
-    while let Some((x, y)) = queue.pop_front() {
-        let here = at(&features, w, h, x, y);
-        for (nx, ny) in [(x.saturating_sub(1), y), ((x + 1).min(w - 1), y), (x, y.saturating_sub(1)), (x, (y + 1).min(h - 1))] {
-            let index = ny * w + nx;
-            if selected.data.get(index).is_some_and(|v| *v == 0.0) && allowed(nx, ny) && difference(here, at(&features, w, h, nx, ny)) < 0.18 {
-                if let Some(v) = selected.data.get_mut(index) {
-                    *v = 1.0;
-                }
-                queue.push_back((nx, ny));
-            }
+    for (i, alpha) in selected.data.iter_mut().enumerate() {
+        if allowed.get(i).copied().unwrap_or(false)
+            && sky.get(i).is_some_and(|&v| v != u16::MAX && (flat_sky || ground.get(i).is_some_and(|&g| v < g)))
+        {
+            *alpha = 1.0;
         }
     }
     // Keep Vision's soft subject contours instead of blurring the sky into hair/trees. One-pixel
@@ -211,6 +278,70 @@ mod tests {
         assert!(mask.get(100, 250) > 0.98, "sky alongside the foreground stays selected");
         assert!(mask.get(200, 450) < 0.02, "blue foreground must not become sky");
         assert!(mask.data.iter().any(|v| (0.1..0.9).contains(v)), "antialiased subject boundary");
+    }
+
+    #[test]
+    fn facades_and_street_lights_touching_the_top_are_not_sky_seeds() {
+        for gain in [0.08, 1.0, 6.0] {
+            for wall_start in [40, 112] {
+                for grey_sky in [false, true] {
+                    let (mut image, horizon) = beach(160, 100, gain, true);
+                    if grey_sky {
+                        for y in 0..horizon - 12 {
+                            for x in 0..160 {
+                                image.data[y * 160 + x] = [0.45, 0.46, 0.47].map(|v| v * gain);
+                            }
+                        }
+                    }
+                    // A neutral facade reaching the upper edge, with windows and cornices.
+                    // It is not protected by Vision: large buildings are often background.
+                    for y in 0..100 {
+                        for x in wall_start..160 {
+                            let colour = if y % 20 < 10 && x % 16 < 6 { [0.13, 0.14, 0.15] } else { [0.32, 0.33, 0.34] };
+                            image.data[y * 160 + x] = colour.map(|v| v * gain);
+                        }
+                    }
+                    let pole = wall_start * 2 / 3;
+                    for y in 0..100 {
+                        for x in pole..pole + 3 {
+                            image.data[y * 160 + x] = [0.24, 0.25, 0.26].map(|v| v * gain);
+                        }
+                    }
+                    for y in 15..18 {
+                        for x in pole - 10..pole {
+                            image.data[y * 160 + x] = [0.24, 0.25, 0.26].map(|v| v * gain);
+                        }
+                    }
+                    let mask = selection(&image, &Plane::new(EDGE, EDGE)).unwrap();
+                    let value = |x: usize, y: usize| mask.get((2 * x + 1) * EDGE / 320, (2 * y + 1) * EDGE / 200);
+                    assert!(value(wall_start + 12, 25) < 0.02, "facade: {gain}, {wall_start}, {grey_sky}");
+                    assert!(value(pole + 1, 30) < 0.02, "pole: {gain}, {wall_start}, {grey_sky}");
+                    assert!(value(pole - 5, 16) < 0.02, "lamp: {gain}, {wall_start}, {grey_sky}");
+                    assert!(value(wall_start / 3, 35) > 0.98, "sky: {gain}, {wall_start}, {grey_sky}");
+                    assert!(value(wall_start / 3, 80) < 0.02, "water: {gain}, {wall_start}, {grey_sky}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bright_waves_do_not_disconnect_dark_water_from_ground() {
+        let (mut image, _) = beach(160, 100, 1.0, true);
+        for y in 80..85 {
+            for x in 0..160 {
+                image.data[y * 160 + x] = [0.7, 0.8, 0.9];
+            }
+        }
+        let mask = selection(&image, &Plane::new(EDGE, EDGE)).unwrap();
+        assert!(mask.get(100, 100) > 0.98, "sky remains selected");
+        assert!(mask.get(100, 360) < 0.02, "water above the wave remains excluded");
+        assert!(mask.get(100, 420) < 0.02, "wave remains excluded");
+    }
+
+    #[test]
+    fn a_frame_filled_with_uniform_sky_has_no_ground_to_subtract() {
+        let image = Rgb32f { width: 80, height: 60, data: vec![[0.34, 0.48, 0.63]; 4800] };
+        assert!(selection(&image, &Plane::new(EDGE, EDGE)).unwrap().data.iter().all(|v| *v > 0.98));
     }
 
     #[test]

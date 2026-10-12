@@ -1,6 +1,6 @@
 # Gaps: where LightCraft falls short of Lightroom
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-11 · **Change:** major (created; absorbs the checklist's Top gaps and the ROADMAP's honest assessment, re-ranked after a full re-measure) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** major (created; absorbs the checklist's Top gaps and the ROADMAP's honest assessment, re-ranked after a full re-measure) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 Every known shortfall, one entry each, ranked by user impact (how many Lightroom users hit it, and
 how hard it blocks them), then by effort. **Agents pick work from the top** (the first entry nobody is
@@ -16,8 +16,10 @@ rendered copies in Photos > LightCraft. It mitigates CR3 decoding and Subject/Ba
 segmentation with Apple system APIs. Native Object clicks need no SAM download; text-prompt
 masking is disabled because this Vision API does not support it. Library browsing uses local Photos previews; iCloud
 originals are retrieved only through each photo’s Download original button.
-Sky selection now combines Vision foreground protection with border connectivity and horizon
-refinement, and stores the result independently of presets/exposure. It remains a heuristic
+Sky selection combines Vision foreground protection with competing sky/ground edge connectivity,
+conservative upper-border seeds and blue-water horizon anchors. Top-touching facades and street
+lights have regressions; an explicit sky update preserves existing local adjustments and Brush
+corrections. Results are stored independently of presets/exposure. It remains a heuristic
 hybrid; complex-scene semantic sky parity is still open. Presets replace the previous selected
 look using a reversible parameter description in the per-photo JSON; Amount preserves manual edits.
 See [apple-integration.md](apple-integration.md). The portable gaps and scores below remain
@@ -81,6 +83,8 @@ Beta-blocking gaps (B) total **~230–430 h**; with the stability and platform w
 - 2026-10-05: compressed NEF (#86). The older history is in [ROADMAP.md](../ROADMAP.md#progress-log).
 
 ## Revision history
+
+- 2026-10-12: Native sky/ground contour competition and explicit updates added; facade/pole/wave regressions; semantic sky gap retained.
 
 - 2026-10-11: Apple-service fork mitigation recorded; native Object masks now use Vision without SAM; unsupported text selection disabled. Portable gaps retained.
 - 2026-10-11: Native sky refinement and reversible preset selection recorded; semantic sky gap retained.

@@ -296,6 +296,19 @@ pub fn specs() -> Vec<CommandSpec> {
             })
         }),
         cmd!(
+            "mask.reselectSky",
+            "Update Sky Selection",
+            [],
+            None,
+            "{id?: maskId, component?: index (last sky component)} — update a saved Sky selection from the original with Apple Vision/sky refinement; preserve local adjustments, Edge and other components; undoable; runs asynchronously in the app",
+            has_active,
+            |s, p| {
+                let job = crate::apple::VisionSkyUpdate::prepare(s, p).map_err(ai_err)?;
+                let seg = job.run().map_err(ai_err)?;
+                job.accept(s, seg).map_err(ai_err)
+            }
+        ),
+        cmd!(
             "mask.sampleColor",
             "Sample Mask Color",
             [],
