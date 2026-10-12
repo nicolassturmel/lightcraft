@@ -16,11 +16,11 @@ rendered copies in Photos > LightCraft. It mitigates CR3 decoding and Subject/Ba
 segmentation with Apple system APIs. Native Object clicks need no SAM download; text-prompt
 masking is disabled because this Vision API does not support it. Library browsing uses local Photos previews; iCloud
 originals are retrieved only through each photo’s Download original button.
-Sky selection combines Vision foreground protection with competing sky/ground edge connectivity,
-conservative upper-border seeds and blue-water horizon anchors. Top-touching facades and street
-lights have regressions; an explicit sky update preserves existing local adjustments and Brush
-corrections. Results are stored independently of presets/exposure. It remains a heuristic
-hybrid; complex-scene semantic sky parity is still open. Presets replace the previous selected
+Sky selection now uses Apple’s published semantic model through Vision/Core ML, bundled for
+offline inference, with conservative source-edge refinement and foreground protection. An
+explicit update preserves local adjustments and Brush corrections. Results remain independent
+of presets/exposure. Three-photo native checks cover overcast and coastal/urban scenes; thin
+structures and classification errors remain, so broad semantic sky parity is still open. Presets replace the previous selected
 look using a reversible parameter description in the per-photo JSON; Amount preserves manual edits.
 See [apple-integration.md](apple-integration.md). The portable gaps and scores below remain
 open; no broader camera-coverage claim is made from one Canon R8 test.
@@ -83,6 +83,8 @@ Beta-blocking gaps (B) total **~230–430 h**; with the stability and platform w
 - 2026-10-05: compressed NEF (#86). The older history is in [ROADMAP.md](../ROADMAP.md#progress-log).
 
 ## Revision history
+
+- 2026-10-12: APPLE.7 replaces native sky-colour/horizon guesses with Apple’s pinned Apache-2.0 semantic model, bundled for offline Vision/Core ML inference; three-photo checks; portable gaps and scores unchanged.
 
 - 2026-10-12: Native sky/ground contour competition and explicit updates added; facade/pole/wave regressions; semantic sky gap retained.
 

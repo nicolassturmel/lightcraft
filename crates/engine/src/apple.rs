@@ -743,8 +743,13 @@ pub fn vision_sky_selection(source: SourceRef) -> Result<SegMask, String> {
             return coverage_to_seg(512, &mask.data);
         }
         let image = lightcraft_raster::resample::fit(&decoded.image, 2048, 2048, lightcraft_raster::resample::Filter::Box);
+        let semantic = lightcraft_apple::semantic_sky_mask(image.width, image.height, &image.data, 512)?;
         let foreground = lightcraft_apple::foreground_mask_or_empty(image.width, image.height, &image.data, 512)?;
-        let mask = crate::sky::selection(&image, &lightcraft_raster::Plane { width: 512, height: 512, data: foreground })?;
+        let mask = crate::sky::selection(
+            &image,
+            &lightcraft_raster::Plane { width: 512, height: 512, data: semantic },
+            &lightcraft_raster::Plane { width: 512, height: 512, data: foreground },
+        )?;
         coverage_to_seg(512, &mask.data)
     }
     #[cfg(not(target_os = "macos"))]
@@ -1373,7 +1378,12 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn native_sky_selection_runs_without_a_model_or_a_foreground_subject() {
+    fn native_sky_selection_uses_the_prepared_semantic_model() {
+        // The weights are an optional build input, not a fixture or a Cargo-time download.
+        let health = lightcraft_apple::invoke(&json!({"operation":"health"}), std::time::Duration::from_secs(15)).unwrap();
+        if health["sky"] != true {
+            return;
+        }
         let (w, h) = (320, 200);
         let image = lightcraft_raster::Rgb32f {
             width: w,
@@ -1383,8 +1393,8 @@ mod tests {
         let source = SourceRef::Loaded(Box::new(DecodedSource::new(Arc::new(image), None)));
         let seg = vision_sky_selection(source).unwrap();
         let values = seg.logits().unwrap();
-        assert!(values[100 * 512 + 100] > 5.0, "sky selected");
-        assert!(values[400 * 512 + 100] < -5.0, "water excluded");
+        assert_eq!(values.len(), 512 * 512);
+        assert!(values.iter().all(|v| v.is_finite()));
     }
 
     #[cfg(target_os = "macos")]

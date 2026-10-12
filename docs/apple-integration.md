@@ -19,12 +19,25 @@ need Apple signing and notarization. The app identifier is `com.nicolassturmel.l
 Launch through Finder or `open` so macOS attributes Photos consent to LightCraft. Launching a
 binary directly from a terminal or automation host can attribute consent to that host.
 
+Packaging fetches Apple’s Apache-2.0 DETR-ResNet50 semantic segmentation model (F16/P8, about
+43 MB), verifies the revision and SHA-256 checksums in `packaging/models/apple-sky.json`, and
+compiles it with the public `MLModel.compileModel` API. Full Xcode is not required. The compiled
+model and its licence are included in the app and macOS CLI package. Model preparation needs a
+network connection once; inference is offline and photos are never uploaded. Weights remain an
+ignored build input under `target/apple-models/`, not repository assets.
+
+For a Cargo-only development/test build, first run `bash packaging/macos/prepare-sky-model.sh`.
+`LIGHTCRAFT_APPLE_MODEL_CACHE` changes the packaging cache location;
+`LIGHTCRAFT_APPLE_SKY_MODEL` can explicitly point a Cargo/CLI run at a compiled `.mlmodelc`.
+An absent or incompatible model reports an error rather than downloading at runtime or switching
+to sky-colour guesses. `apple.status` reports its availability as `sky`.
+
 | Service | API | Minimum macOS |
 |---|---|---|
 | System Photo Library and edited copies | PhotoKit | 11 |
 | Photos image decoding and CR3 | Core Image / `CIRAWFilter` | 12 |
 | Subject/background/object masks | `VNGenerateForegroundInstanceMaskRequest`, `VNInstanceMaskObservation` | 14 |
-| Foreground-protected sky masks | Vision foreground instances + source-colour/horizon refinement | 14 |
+| Semantic sky masks | Apple DETR semantic model via `VNCoreMLRequest`, plus source-edge/foreground refinement | 14 |
 
 Normal macOS launches use Photos automatically, including when old UI preferences contain a
 file-library path. `--library DIR` or an explicit `LIGHTCRAFT_LIBRARY` environment variable opens
@@ -130,20 +143,23 @@ Multiple clicks can include several objects. Excluding the last selected object 
 empty mask. A click on undetected background reports an error and preserves the previous mask.
 Vision can group related objects into one instance; use Brush for finer manual corrections.
 
-**Sky** uses a source's embedded semantic sky matte when present. Otherwise it combines Vision's
-foreground protection with competing sky/ground connectivity across image edges. Upper-border
-seeds favour smooth regions separated from the ground: neutral facades and street lights touching
-the top are not automatically labelled sky. Vision contours remain barriers even when subject and
-sky colours match. A continuous blue-water horizon anchors water below it without cutting off grey
-cloud banks; bright waves cannot disconnect that water from the ground. Neutral clouds are retained. The selection
-is computed from the oriented original preview, independently of exposure, B&W, presets or crop,
-then stored as `skySelection` logits with the same Edge control as other native masks. A landscape
-without a Vision foreground subject is valid. This is a hybrid refinement, **not a dedicated
-semantic sky model**: ambiguous indoor scenes, weak horizons and complex landscapes can still
-need Add/Subtract Brush corrections. No SAM download is used. **Update Sky Selection** refreshes
+**Sky** uses a source’s embedded semantic sky matte when present. Otherwise it runs Apple’s
+published DETR semantic segmentation model through `VNCoreMLRequest`. The sky category is read
+from the model’s class metadata, rather than guessed from colours or a horizon. The complete
+oriented original preview is scaled to the model input without centre cropping. A bounded
+edge-connectivity pass can remove thin structures connected to classified non-sky regions;
+it cannot add pixels outside the semantic selection. Vision’s soft foreground contours protect
+subjects. A landscape without a detected foreground subject is valid, and no-sky classifications
+stay empty. The selection is independent of exposure, B&W, presets and crop, then stored as
+`skySelection` logits with the existing Edge control.
+
+The model distinguishes sky, buildings, water and other scene classes, but it is not perfect:
+fine poles, foliage, weak boundaries and cloud banks misclassified as mountains can still need
+Add/Subtract Brush corrections. No SAM download is used. **Update Sky Selection** recomputes
 an existing sky component from the original using the current method, keeping its Edge, local
-adjustments, name, inversion, operation and other components (including Brush corrections). This is
-an undoable description edit; saved selections are never silently regenerated during rendering.
+adjustments, name, inversion, operation and other components (including Brush corrections).
+This is an undoable description edit; existing masks are never silently regenerated during
+rendering. Old heuristic selections need this explicit update to benefit from the new model.
 
 The result is stored as portable quantized logits in the adjustment metadata. Crop, scaling
 and edge refinement use that stored selection; rendering and export never require a model.
@@ -186,10 +202,14 @@ Mask regressions verify that Object/Add/Subtract/Intersect never open a SAM dial
 stays disabled, and stale object results cannot write adjustments. The CC0 R8 fixture also checks
 real Vision inference, click/mask orientation, exclusion of the sole selected instance, and
 rejection of a background click without touching the personal Photos library.
-Sky tests cover clouds, tilted horizons, blue water, foreground protection, no-sky inputs,
-exposure variation, top-touching facades/street lights, bright waves and native inference without
-a foreground subject. Sky-update tests cover retained adjustments, undo/redo and stale-result guards. Preset tests cover switching,
-Amount, per-photo baselines, manual corrections, mask ownership, undo/redo and JSON recovery.
+Sky tests cover the semantic prior on identically coloured sky/ground, uniform overcast coverage,
+no-sky inputs, finite/bounded masks, soft foreground protection and ground-connected pole removal
+across exposure levels. An optional native test runs the prepared model through the complete
+engine path. Visual checks on three locally available photographs exercise overcast sky, coastal
+water, foreground subjects and vertical urban buildings; they do not establish general Lightroom
+mask parity. Sky-update tests cover retained adjustments, undo/redo and stale-result guards.
+Preset tests cover switching, Amount, per-photo baselines, manual corrections, mask ownership,
+undo/redo and JSON recovery.
 Real PhotoKit writes require an authorized
 macOS session and are not performed against a personal library by the automated tests.
 
@@ -200,4 +220,6 @@ API references: [PhotoKit](https://developer.apple.com/documentation/photos),
 [PHAdjustmentData](https://developer.apple.com/documentation/photos/phadjustmentdata),
 [CIRAWFilter](https://developer.apple.com/documentation/coreimage/cirawfilter),
 [Vision foreground masks](https://developer.apple.com/documentation/vision/vngenerateforegroundinstancemaskrequest),
-[Vision instance labels](https://developer.apple.com/documentation/vision/vninstancemaskobservation/instancemask).
+[Vision instance labels](https://developer.apple.com/documentation/vision/vninstancemaskobservation/instancemask),
+[Apple semantic segmentation sample](https://developer.apple.com/documentation/coreml/using-core-ml-for-semantic-image-segmentation),
+[Apple model and licence](https://huggingface.co/apple/coreml-detr-semantic-segmentation).

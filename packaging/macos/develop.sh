@@ -20,6 +20,7 @@ sed -e "s/@VERSION@/$VERSION-apple-dev/g" -e "s/@SHORT_VERSION@/$VERSION/g" \
   -e "s/@BUILD_SHA@/${LIGHTCRAFT_BUILD_SHA:-unknown}/g" \
   "$ROOT/packaging/macos/Info.plist.in" > "$APP/Contents/Info.plist"
 copy_docs "$APP/Contents/Resources/Licenses"
+bash "$ROOT/packaging/macos/prepare-sky-model.sh" "$APP/Contents/Resources"
 plutil -lint "$APP/Contents/Info.plist"
 codesign --force --sign - "$APP/Contents/MacOS/lightcraft-apple"
 codesign --force --sign - "$APP/Contents/MacOS/LightCraft"

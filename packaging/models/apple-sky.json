@@ -1,0 +1,24 @@
+{
+  "revision": "7c771f8867a479d1441ac5fb0a8de31feea76bb6",
+  "files": [
+    {
+      "path": "DETRResnet50SemanticSegmentationF16P8.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "size": 337183,
+      "sha256": "3d3666837fe990d3948308e417949864b5c2ab0dd9f21091c755c8effa005c40"
+    },
+    {
+      "path": "DETRResnet50SemanticSegmentationF16P8.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "size": 42748128,
+      "sha256": "8e0a22ecc1921f81611864434714ae1989f3e992ec04994ed22a8ead6deccce7"
+    },
+    {
+      "path": "DETRResnet50SemanticSegmentationF16P8.mlpackage/Manifest.json",
+      "size": 617,
+      "sha256": "e7154240ddfd55b776642ae4f6b47d42bf8ad1b9425d97151d4d7b7875d0bf95"
+    }
+  ],
+  "repository": "apple/coreml-detr-semantic-segmentation",
+  "package": "DETRResnet50SemanticSegmentationF16P8.mlpackage",
+  "compiled": "DETRResnet50SemanticSegmentationF16P8.mlmodelc",
+  "license": "Apache-2.0"
+}

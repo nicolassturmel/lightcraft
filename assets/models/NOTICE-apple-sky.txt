@@ -1,0 +1,10 @@
+LightCraft macOS includes DETRResnet50SemanticSegmentationF16P8, published by Apple.
+
+Source: https://huggingface.co/apple/coreml-detr-semantic-segmentation
+Revision: 7c771f8867a479d1441ac5fb0a8de31feea76bb6
+Original model: facebook/detr-resnet-50-panoptic (Facebook Research DETR)
+Conversion and 8-bit palettization: Apple
+Licence: Apache License, Version 2.0 (LICENSE-apple-sky.txt)
+
+LightCraft compiles the model for Core ML without changing the model weights.
+The model files are fetched and verified during packaging, then bundled for offline inference.

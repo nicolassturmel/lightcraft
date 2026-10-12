@@ -161,6 +161,16 @@ pub fn foreground_mask_or_empty(width: usize, height: usize, pixels: &[[f32; 3]]
     vision_mask(width, height, pixels, side, None, true)
 }
 
+/// Classify sky using Apple's bundled semantic model through Vision/Core ML. Inference is local;
+/// a missing model is an explicit packaging error, never a download or a colour-based fallback.
+pub fn semantic_sky_mask(width: usize, height: usize, pixels: &[[f32; 3]], side: usize) -> Result<Vec<f32>, String> {
+    validate_mask_input(width, height, pixels, side)?;
+    #[cfg(target_os = "macos")]
+    return native::mask(width, height, pixels, side, None, true, Some(&native::sky_model()?));
+    #[cfg(not(target_os = "macos"))]
+    Err("Apple semantic sky masks are available only on macOS".into())
+}
+
 /// Pick foreground instances at normalized, top-left-origin image points. Exclusions remove
 /// whole detected instances; an empty selection stays empty (never selects every instance).
 pub fn foreground_instances(
@@ -188,18 +198,23 @@ fn vision_mask(
     points: InstancePoints<'_>,
     allow_empty: bool,
 ) -> Result<Vec<f32>, String> {
-    checked_pixels(width, height, 10_000_000)?;
-    checked_pixels(side, side, 1_048_576)?;
-    if pixels.len() != width.saturating_mul(height) || pixels.iter().flatten().any(|v| !v.is_finite()) {
-        return Err("invalid Vision input pixels".into());
-    }
+    validate_mask_input(width, height, pixels, side)?;
     #[cfg(target_os = "macos")]
-    return native::foreground_mask(width, height, pixels, side, points, allow_empty);
+    return native::mask(width, height, pixels, side, points, allow_empty, None);
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (points, allow_empty);
         Err("Apple Vision is available only on macOS".into())
     }
+}
+
+fn validate_mask_input(width: usize, height: usize, pixels: &[[f32; 3]], side: usize) -> Result<(), String> {
+    checked_pixels(width, height, 10_000_000)?;
+    checked_pixels(side, side, 1_048_576)?;
+    if pixels.len() != width.saturating_mul(height) || pixels.iter().flatten().any(|v| !v.is_finite()) {
+        return Err("invalid Vision input pixels".into());
+    }
+    Ok(())
 }
 
 fn checked_pixels(width: usize, height: usize, max: usize) -> Result<usize, String> {
@@ -222,6 +237,27 @@ mod native {
 
     const HELPER: &[u8] = include_bytes!(env!("LIGHTCRAFT_APPLE_HELPER"));
     const MAX_JSON: u64 = 192_000;
+
+    pub fn sky_model() -> Result<PathBuf, String> {
+        const MODEL: &str = "DETRResnet50SemanticSegmentationF16P8.mlmodelc";
+        let path = if let Some(path) = std::env::var_os("LIGHTCRAFT_APPLE_SKY_MODEL") {
+            PathBuf::from(path)
+        } else if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
+            if dir.file_name().is_some_and(|name| name == "MacOS") {
+                dir.parent().ok_or("invalid macOS bundle location")?.join("Resources/Models").join(MODEL)
+            } else if dir.join("Models").join(MODEL).is_dir() {
+                dir.join("Models").join(MODEL)
+            } else {
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/apple-models").join(MODEL)
+            }
+        } else {
+            return Err("cannot locate the Apple semantic sky model".into());
+        };
+        if !path.is_dir() {
+            return Err("Apple sky model missing. Run packaging/macos/prepare-sky-model.sh or rebuild the macOS package.".into());
+        }
+        Ok(path)
+    }
 
     fn helper() -> Result<PathBuf, String> {
         // Release bundles provide a signed sibling. Cargo/CLI builds extract the embedded helper.
@@ -260,7 +296,14 @@ mod native {
     }
 
     pub fn invoke(request: &Value, timeout: Duration) -> Result<Value, String> {
-        let data = serde_json::to_vec(request).map_err(|e| e.to_string())?;
+        let mut request = request.clone();
+        if request.get("operation").and_then(Value::as_str) == Some("health")
+            && request.get("model").is_none()
+            && let Ok(model) = sky_model()
+        {
+            request["model"] = json!(model);
+        }
+        let data = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
         if data.len() > 65_536 {
             return Err("oversized Apple bridge request".into());
         }
@@ -349,13 +392,14 @@ mod native {
         Ok(RawImage { metadata, pixels })
     }
 
-    pub fn foreground_mask(
+    pub fn mask(
         width: usize,
         height: usize,
         pixels: &[[f32; 3]],
         side: usize,
         points: super::InstancePoints<'_>,
         allow_empty: bool,
+        model: Option<&Path>,
     ) -> Result<Vec<f32>, String> {
         let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
         let path = dir.path().join("rec2020.f32");
@@ -369,6 +413,10 @@ mod native {
         file.flush().map_err(|e| e.to_string())?;
         let mut request =
             json!({"operation":"vision-mask", "path":path, "output":output, "width":width, "height":height, "side":side, "allowEmpty":allow_empty});
+        if let Some(model) = model {
+            request["operation"] = json!("vision-sky-mask");
+            request["model"] = json!(model);
+        }
         if let Some((include, exclude)) = points {
             request["points"] = json!(include);
             request["exclude"] = json!(exclude);
@@ -417,6 +465,8 @@ mod tests {
         assert!(checked_pixels(0, 1, 100).is_err());
         assert!(foreground_mask(10, 10, &[], 512).is_err());
         assert!(foreground_mask(1, 1, &[[f32::NAN, 0.0, 0.0]], 512).is_err());
+        assert!(semantic_sky_mask(1, 1, &[[0.0; 3]], 1025).is_err());
+        assert!(semantic_sky_mask(1, 1, &[[f32::INFINITY; 3]], 512).is_err());
         assert!(foreground_instances(1, 1, &[[0.0; 3]], 2, &[[f64::NAN, 0.5]], &[]).is_err());
         assert!(foreground_instances(1, 1, &[[0.0; 3]], 2, &[[1.01, 0.5]], &[]).is_err());
         assert!(foreground_instances(1, 1, &[[0.0; 3]], 2, &[[0.5, 0.5]; 65], &[]).is_err());
@@ -429,6 +479,8 @@ mod tests {
         assert_eq!(result["protocol"], 2);
         assert!(result["photos"].is_string());
         assert!(result["vision"].is_boolean());
+        assert!(result["sky"].is_boolean());
+        assert_eq!(result["skyProvider"], "Apple Vision / Core ML");
     }
 
     #[cfg(target_os = "macos")]

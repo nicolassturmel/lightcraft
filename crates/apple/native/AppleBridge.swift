@@ -3,6 +3,7 @@ import Foundation
 import AppKit
 import Photos
 import CoreImage
+import CoreML
 import ImageIO
 import Vision
 import UniformTypeIdentifiers
@@ -42,6 +43,7 @@ struct Request: Decodable {
     var points: [[Double]]?
     var exclude: [[Double]]?
     var allowEmpty: Bool?
+    var model: String?
 }
 
 func required(_ value: String?, _ name: String) throws -> String {
@@ -473,6 +475,80 @@ func foregroundMask(_ request: Request) throws -> [String: Any] {
     return ["side": side, "provider": "Apple Vision"]
 }
 
+func skyModelURL(_ request: Request) -> URL {
+    if let path = request.model { return URL(fileURLWithPath: path) }
+    let executable = URL(fileURLWithPath: CommandLine.arguments.first ?? "")
+    return executable.deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Resources/Models/DETRResnet50SemanticSegmentationF16P8.mlmodelc")
+}
+
+@available(macOS 14.0, *)
+func semanticSkyMask(_ request: Request) throws -> [String: Any] {
+    let width = request.width ?? 0, height = request.height ?? 0, side = request.side ?? 512
+    let count = try checkedDimensions(width, height, limit: 10_000_000)
+    _ = try checkedDimensions(side, side, limit: 1_048_576)
+    let input = try FileHandle(forReadingFrom: URL(fileURLWithPath: try required(request.path, "path")))
+    defer { try? input.close() }
+    let data = try input.read(upToCount: count * 16 + 1) ?? Data()
+    guard data.count == count * 16, let space = CGColorSpace(name: CGColorSpace.extendedLinearITUR_2020) else {
+        throw BridgeError("Invalid semantic sky input")
+    }
+    let path = skyModelURL(request)
+    guard FileManager.default.fileExists(atPath: path.path) else {
+        throw BridgeError("The bundled Apple sky model is missing. Rebuild the macOS package with packaging/macos/develop.sh.")
+    }
+    let configuration = MLModelConfiguration()
+    configuration.computeUnits = .cpuAndNeuralEngine
+    let model = try MLModel(contentsOf: path, configuration: configuration)
+    guard let metadata = model.modelDescription.metadata[.creatorDefinedKey] as? [String: String],
+          let parameters = metadata["com.apple.coreml.model.preview.params"],
+          let json = parameters.data(using: .utf8), json.count <= 65_536,
+          let preview = try JSONSerialization.jsonObject(with: json) as? [String: Any],
+          let labels = preview["labels"] as? [String], !labels.isEmpty, labels.count <= 4096 else {
+        throw BridgeError("The Apple sky model has invalid class metadata")
+    }
+    let skyClasses = Set(labels.indices.filter { ["sky", "sky (other)", "sky-other"].contains(labels[$0].lowercased()) })
+    guard !skyClasses.isEmpty else { throw BridgeError("The Apple model does not contain a sky category") }
+    let image = CIImage(bitmapData: data, bytesPerRow: width * 16, size: CGSize(width: width, height: height), format: .RGBAf, colorSpace: space)
+    let handler = VNImageRequestHandler(ciImage: image, orientation: .up)
+    let inference = VNCoreMLRequest(model: try VNCoreMLModel(for: model))
+    // Preserve the complete, oriented image: center cropping would move masks on portrait photos.
+    inference.imageCropAndScaleOption = .scaleFill
+    try handler.perform([inference])
+    guard let result = inference.results?.compactMap({ $0 as? VNCoreMLFeatureValueObservation })
+        .first(where: { $0.featureName == "semanticPredictions" }),
+          let classes = result.featureValue.multiArrayValue, classes.shape.count == 2, classes.dataType == .int32 else {
+        throw BridgeError("The Apple sky model returned an unsupported class map")
+    }
+    let maskHeight = classes.shape[0].intValue, maskWidth = classes.shape[1].intValue
+    let maskCount = try checkedDimensions(maskWidth, maskHeight, limit: 1_048_576)
+    guard classes.count == maskCount else { throw BridgeError("Truncated semantic sky map") }
+    var selected = [Float](repeating: 0, count: maskCount)
+    for y in 0..<maskHeight {
+        for x in 0..<maskWidth {
+            let label = classes[[NSNumber(value: y), NSNumber(value: x)]].intValue
+            guard labels.indices.contains(label) else { throw BridgeError("Invalid semantic sky class") }
+            selected[y * maskWidth + x] = skyClasses.contains(label) ? 1 : 0
+        }
+    }
+    var coverage = [Float](repeating: 0, count: side * side)
+    for y in 0..<side {
+        let py = max(0, min(Double(maskHeight - 1), (Double(y) + 0.5) * Double(maskHeight) / Double(side) - 0.5))
+        let y0 = Int(py), y1 = min(y0 + 1, maskHeight - 1), fy = Float(py - Double(y0))
+        for x in 0..<side {
+            let px = max(0, min(Double(maskWidth - 1), (Double(x) + 0.5) * Double(maskWidth) / Double(side) - 0.5))
+            let x0 = Int(px), x1 = min(x0 + 1, maskWidth - 1), fx = Float(px - Double(x0))
+            let a = selected[y0 * maskWidth + x0] * (1 - fx) + selected[y0 * maskWidth + x1] * fx
+            let b = selected[y1 * maskWidth + x0] * (1 - fx) + selected[y1 * maskWidth + x1] * fx
+            coverage[y * side + x] = a * (1 - fy) + b * fy
+        }
+    }
+    try coverage.withUnsafeBytes { bytes in
+        try Data(bytes).write(to: URL(fileURLWithPath: try required(request.output, "output")), options: .atomic)
+    }
+    return ["side": side, "provider": "Apple Vision / Core ML", "model": "DETR-ResNet50-F16P8", "category": "sky"]
+}
+
 @main struct AppleBridge {
     static func main() async {
         // A UI being closed must not leave a PhotoKit download or permission waiter orphaned.
@@ -491,7 +567,10 @@ func foregroundMask(_ request: Request) throws -> [String: Any] {
             case "health":
                 result = ["protocol": 2, "photos": authorizationName(PHPhotoLibrary.authorizationStatus(for: .readWrite)),
                     "raw": ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 12, minorVersion: 0, patchVersion: 0)),
-                    "vision": ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 14, minorVersion: 0, patchVersion: 0))]
+                    "vision": ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 14, minorVersion: 0, patchVersion: 0)),
+                    "sky": ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 14, minorVersion: 0, patchVersion: 0))
+                        && FileManager.default.fileExists(atPath: skyModelURL(request).path),
+                    "skyProvider": "Apple Vision / Core ML"]
             case "photos-import": result = try await importPhotos(request)
             case "photos-snapshot": result = try await snapshotPhotos(request)
             case "photos-preview": result = try await previewPhotos(request)
@@ -506,6 +585,9 @@ func foregroundMask(_ request: Request) throws -> [String: Any] {
             case "vision-mask":
                 guard #available(macOS 14.0, *) else { throw BridgeError("Apple Vision foreground masks require macOS 14 or later") }
                 result = try foregroundMask(request)
+            case "vision-sky-mask":
+                guard #available(macOS 14.0, *) else { throw BridgeError("Apple semantic sky masks require macOS 14 or later") }
+                result = try semanticSkyMask(request)
             default: throw BridgeError("Unknown Apple bridge operation")
             }
             let response = try JSONSerialization.data(withJSONObject: result)

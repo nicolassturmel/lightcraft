@@ -96,7 +96,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 0, bottom: 10 }).show(ui, |ui| {
         ui.label(egui::RichText::new(crate::i18n::tr("Create New Mask")).color(t.text_dim));
         if native {
-            ui.small(crate::i18n::tr("Apple Vision · no model to install"));
+            ui.small(crate::i18n::tr("Apple Vision · masks computed on this Mac"));
         }
         ui.add_space(6.0);
         let tiles: [(&str, &str, Icon); 10] = [
