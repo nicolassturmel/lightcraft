@@ -1,6 +1,6 @@
 # Target-app parity: LightCraft vs Adobe Lightroom
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (Apple fork semantic sky model recorded; scores unchanged) · **Target:** Adobe Lightroom Classic 15.5 (August 2026) and Lightroom 9.6 (desktop)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (desktop Web view shares native engine/library; scores unchanged) · **Target:** Adobe Lightroom Classic 15.5 (August 2026) and Lightroom 9.6 (desktop)
 
 The authoritative assessment of how close LightCraft is to Lightroom. The row-by-row checklist is
 [parity-checklist.md](parity-checklist.md); the ranked work list is [gaps.md](gaps.md); deep areas
@@ -54,7 +54,7 @@ phase #85, duplicate Local entries #22, black GPU exports on an Intel iGPU #78).
 | Localization (12 key languages) | 7 of 12 present | ~52% (mean of the 12, measured) | 130–210 h for the target's set; +145–255 h for Hindi, Arabic, Indonesian, Vietnamese, Korean | [localization-parity.md](localization-parity.md) |
 | Performance | ~80% | ~70% | 30–50 h | 24 MP GPU slider 3.9 ms, export 0.3 s (measured, [gpu-pipeline.md](gpu-pipeline.md)); 85k library opens in 1.7–4.7 s; 100k test pending |
 | Stability | — | ~60% | 30–60 h | never-crash lints and guards workspace-wide, crash-tested journal, 2,561 tests; but CI runs tests only on FreeBSD, user reports keep finding bugs in ✅ areas |
-| Platforms | macOS, Windows (x64 / x86 / ARM64), Linux (AppImage, deb, rpm, Flatpak, Nix), FreeBSD, web | ~60% | 25–45 h | macOS is where it is tested; Windows installer UI unverified on Windows (#79); web experimental (CPU only) |
+| Platforms | macOS, Windows (x64 / x86 / ARM64), Linux (AppImage, deb, rpm, Flatpak, Nix), FreeBSD, web | ~60% | 25–45 h | macOS is where it is tested; Windows installer UI unverified on Windows (#79); standalone WASM web experimental (CPU only); desktop Web view shares the native engine/library and its GPU/Apple services |
 | Ecosystem / plug-ins | ~25% | ~15% | 40–80 h + owner decision | no Lightroom SDK equivalent (export, publish, metadata plug-ins); beyond the target: JSON-lines control channel, MCP server with 28 tools + one per command, CLI |
 | AI features | ~30% | ~20% | 120–220 h + model decisions | [AI](#ai) (overlaps the masking and Enhance rows; not added twice) |
 
@@ -297,6 +297,7 @@ P2 items 12–25 h; look tuning, performance, packaging, hardening 25–45 h.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-13 | minor | WEB.1: thin browser view shares the native engine, Photos library, commands, undo history and previews; standalone WASM limitations and overall scores unchanged. |
 | 2026-10-12 | minor | APPLE.7: Apple’s pinned semantic sky model bundled for offline Vision/Core ML inference; three native photo checks; broad mask parity and scores unchanged. |
 | 2026-10-12 | minor | Native sky contour competition excludes top-touching facades/poles; explicit updates retain edits and are undoable; semantic gap and scores unchanged. |
 | 2026-10-11 | minor | Apple fork sky refinement and reversible preset selection documented; no claim of dedicated semantic sky parity or score increase. |

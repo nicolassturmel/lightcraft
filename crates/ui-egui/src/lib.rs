@@ -27,6 +27,7 @@ mod model_setup;
 pub mod panels;
 pub mod pick;
 pub mod region;
+pub mod remote;
 pub mod render;
 pub mod shortcuts;
 pub mod softpaint;
@@ -258,6 +259,8 @@ pub struct LightcraftApp {
     pub quit_confirmed: bool,
     control_rx: Option<Receiver<ControlRequest>>,
     pending_screenshots: Vec<PendingShot>,
+    pending_desktop_frame: Option<Sender<Result<remote::DesktopFrame, String>>>,
+    pub(crate) remote_input: remote::InputState,
     screenshot_token: u64,
     /// Offscreen context for headless screenshots of the windowed app.
     shadow: Option<headless::HeadlessView>,
@@ -373,6 +376,8 @@ impl LightcraftApp {
             quit_confirmed: false,
             control_rx: None,
             pending_screenshots: vec![],
+            pending_desktop_frame: None,
+            remote_input: remote::InputState::default(),
             screenshot_token: 0,
             shadow: None,
             synthetic: vec![],
@@ -681,6 +686,14 @@ impl LightcraftApp {
         while let Ok(req) = rx.try_recv() {
             let reply = req.reply.clone();
             match control::handle(self, ctx, &req) {
+                control::Outcome::DesktopFrame(reply) => {
+                    if self.pending_desktop_frame.is_some() {
+                        let _ = reply.send(Err("a desktop frame is already being prepared".into()));
+                    } else {
+                        self.pending_desktop_frame = Some(reply);
+                        ctx.request_repaint();
+                    }
+                }
                 control::Outcome::Done(v) => {
                     let _ = reply.send(v);
                 }
@@ -754,13 +767,20 @@ impl LightcraftApp {
     /// Draw the UI into an offscreen context at the window's size; with `capture`, rasterize it
     /// on the CPU (photo textures come from the renderer's CPU copies).
     pub fn headless_screenshot(&mut self, main: &egui::Context, capture: bool) -> Option<egui::ColorImage> {
+        self.capture_headless(main, capture, None)
+    }
+
+    fn capture_headless(&mut self, main: &egui::Context, capture: bool, max_edge: Option<f32>) -> Option<egui::ColorImage> {
         let mut view = self.shadow.take().unwrap_or_default();
         let size = main.input(|i| i.content_rect()).size();
         let size = if size.x >= 1.0 && size.y >= 1.0 { size } else { egui::vec2(1600.0, 1000.0) };
         // Feed native viewport points; the shadow context applies the copied UI zoom.
         let zoom = main.zoom_factor();
         let size = size * zoom;
-        let ppp = main.pixels_per_point() / zoom;
+        let mut ppp = main.pixels_per_point() / zoom;
+        if let Some(edge) = max_edge {
+            ppp = ppp.min(edge / size.x.max(size.y));
+        }
         let time = main.input(|i| i.time);
         if view.frames() == 0 {
             // warm-up pass: activates our fonts (pending font definitions live in `Memory`, which
@@ -780,6 +800,21 @@ impl LightcraftApp {
         });
         self.shadow = Some(view);
         img
+    }
+
+    fn issue_desktop_frame(&mut self, ctx: &egui::Context) {
+        let Some(reply) = self.pending_desktop_frame.take() else { return };
+        let viewport = ctx.content_rect().size();
+        let result = self
+            .capture_headless(ctx, true, Some(remote::MAX_FRAME_EDGE as f32))
+            .ok_or_else(|| "desktop preview is not ready".to_string())
+            .map(|image| remote::DesktopFrame {
+                image,
+                viewport: [viewport.x, viewport.y],
+                cursor: remote::cursor(ctx.output(|o| o.cursor_icon)),
+                state: remote::state_key(self),
+            });
+        let _ = reply.send(result);
     }
 
     fn collect_screenshots(&mut self, ctx: &egui::Context) {
@@ -866,6 +901,7 @@ impl LightcraftApp {
         }
         self.last_time = now;
         self.drain_control(ctx);
+        remote::expire(self, ctx);
         self.apply_settings(ctx);
         if !self.synthetic.is_empty() {
             ctx.request_repaint();
@@ -937,6 +973,7 @@ impl LightcraftApp {
         panels::faces::pump(self, ctx);
         self.collect_screenshots(ctx);
         self.issue_screenshots(ctx);
+        self.issue_desktop_frame(ctx);
         if self.fonts_ready {
             shortcuts::handle(self, ctx);
         }
@@ -1014,6 +1051,12 @@ impl LightcraftApp {
 
     /// Inject synthetic events (pointer events one per frame; key sequences up to the release).
     pub fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
+        if self.remote_input.focused {
+            raw.focused = true;
+            if let Some(viewport) = raw.viewports.get_mut(&egui::ViewportId::ROOT) {
+                viewport.focused = Some(true);
+            }
+        }
         // the frame after a synthetic release / key: modifiers back up
         if std::mem::take(&mut self.synthetic_mods_release) && self.synthetic_mods != egui::Modifiers::NONE {
             self.synthetic_mods = egui::Modifiers::NONE;
@@ -1032,9 +1075,9 @@ impl LightcraftApp {
         // egui's `input.modifiers` follow `ModifiersChanged` events, not the modifiers carried by
         // pointer/key events: announce the injected events' modifiers (held from button down to
         // the frame after up), so ⌥-drag, ⇧-click … work through the control channel
-        let carried = self.synthetic[..n].iter().find_map(|e| match e {
+        let carried = self.synthetic[..n].iter().rev().find_map(|e| match e {
             egui::Event::PointerButton { pressed, modifiers, .. } => Some((*modifiers, !pressed)),
-            egui::Event::Key { modifiers, .. } => Some((*modifiers, true)),
+            egui::Event::Key { pressed, modifiers, .. } => Some((*modifiers, !pressed)),
             _ => None,
         });
         if let Some((m, ends)) = carried {

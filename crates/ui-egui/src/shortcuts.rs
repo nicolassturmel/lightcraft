@@ -335,7 +335,8 @@ pub fn handle(app: &mut LightcraftApp, ctx: &egui::Context) {
     }
     let mut fire: Vec<String> = Vec::new();
     // shortcuts the native menu bar handles (it consumes those key presses itself)
-    let native = |sc: &str| app.native_shortcuts.contains(sc);
+    // Browser key events are injected into egui; they never reach AppKit's menu accelerators.
+    let native = |sc: &str| app.native_shortcuts.contains(sc) && !app.remote_input.focused;
     let mut aliased: Vec<(&str, serde_json::Value)> = Vec::new();
     let keymap = &app.ui.settings.keymap;
     let grid = library_grid(app);

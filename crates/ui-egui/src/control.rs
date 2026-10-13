@@ -26,18 +26,28 @@ pub struct ControlRequest {
     pub method: String,
     pub params: Value,
     pub reply: Sender<ControlResponse>,
+    pub(crate) frame_reply: Option<Sender<Result<crate::remote::DesktopFrame, String>>>,
 }
 
 impl ControlRequest {
     pub fn new(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
         let (tx, rx) = std::sync::mpsc::channel();
-        (Self { method: method.into(), params, reply: tx }, rx)
+        (Self { method: method.into(), params, reply: tx, frame_reply: None }, rx)
+    }
+
+    /// A bounded, binary preview request from the desktop's HTTP view. No file or JSON pixel
+    /// payload is created, and no second engine/session is involved.
+    pub fn desktop_frame() -> (Self, std::sync::mpsc::Receiver<Result<crate::remote::DesktopFrame, String>>) {
+        let (reply, _) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::channel();
+        (Self { method: "ui.desktopFrame".into(), params: json!({}), reply, frame_reply: Some(tx) }, rx)
     }
 }
 
 pub enum Outcome {
     Done(Value),
     Screenshot { path: Option<String>, headless: bool },
+    DesktopFrame(Sender<Result<crate::remote::DesktopFrame, String>>),
 }
 
 fn ok(v: Value) -> Outcome {
@@ -139,7 +149,7 @@ fn modifiers(p: &Value) -> egui::Modifiers {
     egui::Modifiers { alt: b("alt"), ctrl: b("ctrl"), shift: b("shift"), mac_cmd: b("cmd") && cfg!(target_os = "macos"), command: b("cmd") }
 }
 
-fn key_from(name: &str) -> Option<egui::Key> {
+pub(crate) fn key_from(name: &str) -> Option<egui::Key> {
     egui::Key::from_name(name).or(match name.to_ascii_lowercase().as_str() {
         "enter" | "return" => Some(egui::Key::Enter),
         "esc" | "escape" => Some(egui::Key::Escape),
@@ -177,6 +187,11 @@ pub fn handle(app: &mut LightcraftApp, ctx: &egui::Context, req: &ControlRequest
     let s = |k: &str| p.get(k).and_then(Value::as_str);
     let f = |k: &str| p.get(k).and_then(Value::as_f64);
     match req.method.as_str() {
+        "ui.desktopFrame" => match &req.frame_reply {
+            Some(reply) => Outcome::DesktopFrame(reply.clone()),
+            None => err("desktop frames require the binary Web view transport"),
+        },
+        "ui.webInput" => wrap(crate::remote::input(app, ctx, p)),
         "engine.execute" | "ui.menu.invoke" | "command" => {
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
             let params = p.get("params").cloned().filter(|v| !v.is_null()).unwrap_or(json!({}));

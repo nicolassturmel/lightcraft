@@ -1,7 +1,67 @@
 # LightCraft in the browser
 
-`apps/lightcraft-web` runs the same egui UI as the desktop app (`crates/ui-egui`) in the browser,
-compiled to WebAssembly and drawn with WebGL2 (eframe's `glow` backend).
+This fork’s **desktop Web view** is a thin controller and preview of the running Mac session.
+The desktop owns the engine, Photos library, selection, edits, history, RAW decoding and Apple
+Vision/Core ML inference. The browser receives a rendered view and sends input/commands; it
+creates no catalogue, imports no originals and starts no WASM engine or model download.
+
+## Desktop view
+
+Build the native bundle, then launch it with its Web listener:
+
+```sh
+bash packaging/macos/develop.sh
+open target/apple-development/LightCraft.app --args --web 8080 --web-bind 0.0.0.0 --control 18088
+```
+
+Launch these options after closing the previous instance. Open `http://127.0.0.1:8080/`.
+`LIGHTCRAFT_WEB_PORT` is an alternative to `--web`; `--no-web` disables the listener. The Web
+listener defaults to `0.0.0.0`; the existing JSON-lines/MCP transport remains on loopback.
+Both transports feed the same desktop UI request queue, never separate engine sessions.
+
+Navigation is shared: selecting an album/photo, moving a slider, changing a preset or creating a
+mask in either view changes the same desktop session. Undo/redo and the Photos adjustment JSON
+are shared too. The per-photo iCloud download button and original-safe export rules remain in
+the native engine. The browser sees the desktop’s normal library thumbnails and editing preview.
+Closing LightCraft ends the service; the browser displays a disconnected state and disables
+input. **Reconnecter** reconnects to the running desktop, without creating a fallback library.
+
+The complete native view is sent as JPEG previews (quality 90, 4:4:4, at most 1920 pixels on the
+long edge); preview pixels travel over the network, not RAW originals. Pointer positions use
+the desktop’s logical viewport, independent of JPEG size/browser scaling/Retina density. Window
+size, active photo/source, panel and active-mask changes invalidate stale input. Pressed buttons
+and keys are released after a disconnected gesture expires. Input remains application-scoped:
+no OS-level synthetic events are used. Render/export still reconstruct from the original and
+its separate description. This preview stream is not a full-resolution export or an HDR stream.
+
+**Actions** exposes the native command registry (including menus outside the Mac window).
+Keyboard, text input, scroll, right-click and slider/brush/crop gestures are forwarded. Native
+file pickers and other OS dialogs appear on the Mac. Browser navigation shortcuts stay with the
+browser; ordinary editing shortcuts use the desktop’s bindings.
+
+Localhost establishes an HttpOnly, SameSite session cookie. **Copier le lien** produces a keyed
+LAN connection link; its fragment is removed after the browser establishes the session. Keys
+change when the app restarts. Image/command endpoints require that session and refuse foreign
+origins/DNS rebinding. Responses are not stored in the browser cache. The server bounds headers,
+JSON bodies, frame dimensions, output size, connections and concurrent frame work.
+
+Protocol: `GET /api/connect`, `GET /api/frame` (JPEG with viewport/cursor/state headers),
+`POST /api/rpc {method, params}`. Native `ui.webInput` validates complete input batches before
+queuing them; the binary `ControlRequest::desktop_frame` supplies previews without temporary
+image files or JSON pixel arrays. See `apps/lightcraft/src/web_server.rs`, `apps/lightcraft/web/`
+and `crates/ui-egui/src/remote.rs`.
+
+Tests cover transport bounds, authentication/origin isolation, shared command dispatch, Retina
+preview bounds, stale/invalid input, gesture expiry and native-menu keyboard routing. End-to-end
+checks use the browser and TCP control channel on the same temporary native session, including
+selection, exposure, undo/redo, native masks and unchanged input-file hashes.
+
+## Standalone WASM build
+
+The original experimental `apps/lightcraft-web` mode remains available separately. It runs the
+egui UI in the browser, compiled to WebAssembly and drawn with WebGL2 (eframe’s `glow` backend).
+It owns browser storage and cannot access Apple Photos or the Mac’s live session. The following
+WASM build instructions apply to that separate mode; the desktop view needs no WASM build.
 
 ## Build and run locally
 

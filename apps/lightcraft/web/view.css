@@ -1,0 +1,20 @@
+:root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #171717; color: #ddd; }
+* { box-sizing: border-box; }
+body { margin: 0; height: 100dvh; overflow: hidden; display: flex; flex-direction: column; }
+header { min-height: 42px; padding: 7px 14px; display: flex; align-items: center; gap: 12px; background: #262626; border-bottom: 1px solid #383838; font-size: 12px; }
+header strong { color: #eee; font-size: 14px; letter-spacing: -.3px; }
+.session { color: #a5a5a5; border-left: 1px solid #4a4a4a; padding-left: 12px; }
+#status { color: #aaa; flex: 1; }
+nav { display: flex; gap: 6px; }
+button, input { font: inherit; color: inherit; background: #333; border: 1px solid #505050; border-radius: 4px; padding: 5px 10px; }
+button { cursor: pointer; } button:hover { background: #444; } button:focus-visible, input:focus-visible { outline: 2px solid #f3b84c; } button:disabled { opacity: .4; cursor: default; }
+#stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; position: relative; }
+canvas { display: block; max-width: 100%; max-height: 100%; object-fit: contain; outline: none; touch-action: none; user-select: none; }
+#notice { position: absolute; padding: 24px 30px; max-width: 440px; background: #242424eb; border: 1px solid #505050; border-radius: 6px; text-align: center; box-shadow: 0 6px 30px #0008; }
+#notice p { line-height: 1.5; margin-top: 0; } #notice[hidden] { display: none; }
+#commands { position: fixed; top: 50px; right: 14px; width: min(480px, calc(100vw - 28px)); max-height: calc(100dvh - 70px); display: flex; flex-direction: column; background: #262626; border: 1px solid #555; border-radius: 6px; box-shadow: 0 8px 30px #000b; }
+#commands[hidden] { display: none; } .commands-head { display: flex; gap: 8px; padding: 12px; } .commands-head input { flex: 1; min-width: 0; }
+#command-list { overflow: auto; padding: 0 12px 12px; } #command-list h3 { font-size: 11px; color: #aaa; font-weight: 500; text-transform: uppercase; margin: 16px 0 7px; }
+#command-list button { display: flex; align-items: center; justify-content: space-between; text-align: left; width: 100%; margin: 3px 0; border-color: transparent; padding: 8px; } #command-list small { color: #aaa; margin-left: 12px; }
+#share-link { position: fixed; top: 48px; right: 14px; width: min(560px, calc(100vw - 28px)); z-index: 2; }
+@media (max-width: 600px) { header { padding: 6px 8px; gap: 8px; } .session { display: none; } nav { gap: 4px; } button { padding: 5px 7px; } #status { font-size: 10px; } }

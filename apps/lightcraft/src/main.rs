@@ -28,6 +28,7 @@ mod dialog_filter;
 mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
+mod web_server;
 
 use dialog_filter::FileDialogExt as _;
 use lightcraft_engine::Session;
@@ -646,6 +647,8 @@ OPTIONS:
   --memory         throwaway in-memory session (alias --demo); nothing is saved
   --control PORT   serve the JSON-lines control channel on 127.0.0.1:PORT (env LIGHTCRAFT_CONTROL_PORT;
                    see docs/control-protocol.md)
+  --web PORT       serve this desktop session's browser view (env LIGHTCRAFT_WEB_PORT)
+  --web-bind IP    browser listener address (default: 0.0.0.0); --no-web disables it
   --version, --help
 
 ENVIRONMENT:
@@ -720,6 +723,8 @@ fn main() -> eframe::Result {
     }
     alloc_release::install();
     let mut control_port = control_port_from("LIGHTCRAFT_CONTROL_PORT", std::env::var("LIGHTCRAFT_CONTROL_PORT").ok().filter(|v| !v.is_empty()));
+    let mut web_port = control_port_from("LIGHTCRAFT_WEB_PORT", std::env::var("LIGHTCRAFT_WEB_PORT").ok().filter(|v| !v.is_empty()));
+    let mut web_bind = std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
     let mut files = Vec::new();
     let mut seed_demo = true;
     let mut in_memory = false;
@@ -728,6 +733,15 @@ fn main() -> eframe::Result {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--control" => control_port = control_port_from("--control", Some(args.next().unwrap_or_default())),
+            "--web" => web_port = control_port_from("--web", Some(args.next().unwrap_or_default())),
+            "--no-web" => web_port = None,
+            "--web-bind" => match args.next().and_then(|v| v.parse::<std::net::IpAddr>().ok()) {
+                Some(bind) => web_bind = bind,
+                None => {
+                    eprintln!("lightcraft: --web-bind requires an IP address");
+                    std::process::exit(2);
+                }
+            },
             "--library" => library_dir = args.next().map(std::path::PathBuf::from),
             "--no-demo" => seed_demo = false,
             "--memory" | "--demo" => in_memory = true,
@@ -838,7 +852,19 @@ fn main() -> eframe::Result {
                 app.ui.settings.gpu = false;
                 app.notices.push(notice);
             }
-            if let Some(port) = control_port {
+            if let Some(port) = web_port {
+                let (tx, rx) = std::sync::mpsc::channel();
+                if let Some(control) = control_port
+                    && let Err(e) = control_server::attach(control, cc.egui_ctx.clone(), tx.clone())
+                {
+                    app.notices.push(e);
+                }
+                match web_server::start(web_server::Config { bind: web_bind, port }, tx, cc.egui_ctx.clone()) {
+                    Ok(url) => log::info!("Web view ready: {url}"),
+                    Err(e) => app.notices.push(e),
+                }
+                app = app.with_control(rx);
+            } else if let Some(port) = control_port {
                 let rx = control_server::start(port, cc.egui_ctx.clone());
                 app = app.with_control(rx);
             }

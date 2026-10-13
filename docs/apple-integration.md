@@ -44,6 +44,14 @@ file-library path. `--library DIR` or an explicit `LIGHTCRAFT_LIBRARY` environme
 a legacy file catalogue. `--memory` / `--demo` provides a throwaway test session. Other platforms
 retain the portable Rust catalogue and rendering pipeline.
 
+## Desktop Web view
+
+Launch the Mac bundle with `--web 8080 --web-bind 0.0.0.0` to expose its current session at
+`http://127.0.0.1:8080/`. The browser displays the native view and sends application-scoped
+input/commands. The same Photos projection, selection, adjustment JSON, history, previews and
+Apple RAW/Vision/Core ML services are used; no second catalogue, engine or browser original
+store is created. OS permissions and file pickers remain on the Mac. See [Web view](web.md#desktop-view).
+
 ## Main library
 
 Allow the macOS Photos permission request on first launch. Denied access is reported in the

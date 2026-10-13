@@ -174,3 +174,15 @@ A center `move` can include `before` (panel ID or null to append) for tab order.
 The equivalent `{"action": ...}` form accepts a serialized shared docking action;
 this is also the form emitted by the renderer. Protected-canvas and app-specific panel
 rules apply equally to both forms.
+
+## Desktop Web transport (2026-10-13)
+
+`lightcraft --web 8080 --web-bind 0.0.0.0 --control 18088` serves the thin browser view and the
+loopback JSON-lines channel on the **same** desktop control queue. HTTP only exposes an
+authenticated subset of methods; it cannot request arbitrary screenshot file writes.
+`ui.webInput` takes `{viewport:[width,height], state, events:[…]}` in normalized viewport
+coordinates, with bounded/atomic validation and stale-view rejection. Its events cover pointer
+press/release/motion, scroll, key press/release, text, paste, focus and held-gesture heartbeat.
+The Web frame request uses a separate binary reply channel, not JSON pixel payloads. The
+existing JSON-lines screenshot/render and MCP methods keep their behavior. Details and launch
+instructions are in [web.md](web.md#desktop-view).

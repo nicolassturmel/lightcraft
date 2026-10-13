@@ -1,6 +1,6 @@
 # Gaps: where LightCraft falls short of Lightroom
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** major (created; absorbs the checklist's Top gaps and the ROADMAP's honest assessment, re-ranked after a full re-measure) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** major (created; absorbs the checklist's Top gaps and the ROADMAP's honest assessment, re-ranked after a full re-measure) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 Every known shortfall, one entry each, ranked by user impact (how many Lightroom users hit it, and
 how hard it blocks them), then by effort. **Agents pick work from the top** (the first entry nobody is
@@ -22,6 +22,8 @@ explicit update preserves local adjustments and Brush corrections. Results remai
 of presets/exposure. Three-photo native checks cover overcast and coastal/urban scenes; thin
 structures and classification errors remain, so broad semantic sky parity is still open. Presets replace the previous selected
 look using a reversible parameter description in the per-photo JSON; Amount preserves manual edits.
+The native desktop Web view now shares this session’s engine, library, history and previews; the
+standalone WASM mode retains its separate storage limitations. See [web.md](web.md#desktop-view).
 See [apple-integration.md](apple-integration.md). The portable gaps and scores below remain
 open; no broader camera-coverage claim is made from one Canon R8 test.
 
@@ -83,6 +85,8 @@ Beta-blocking gaps (B) total **~230–430 h**; with the stability and platform w
 - 2026-10-05: compressed NEF (#86). The older history is in [ROADMAP.md](../ROADMAP.md#progress-log).
 
 ## Revision history
+
+- 2026-10-13: WEB.1 adds a thin Web view of the native session (shared Photos library/commands/history/previews); standalone WASM gaps and parity scores remain unchanged.
 
 - 2026-10-12: APPLE.7 replaces native sky-colour/horizon guesses with Apple’s pinned Apache-2.0 semantic model, bundled for offline Vision/Core ML inference; three-photo checks; portable gaps and scores unchanged.
 

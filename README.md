@@ -16,6 +16,8 @@ segmentation model locally through **Vision / Core ML**, with source-edge refine
 stay unchanged. Edits save as adjustment
 metadata; **⌘S** creates an edited copy with its recipe in a Photos album named **LightCraft**.
 See [Apple integration](docs/apple-integration.md) for permissions, build instructions and usage.
+The [desktop Web view](docs/web.md#desktop-view), enabled with `--web 8080`, shares the Mac’s
+engine, Photos library, selection, history and previews; the browser is a thin controller.
 Selecting another preset replaces the previous look; its reversible parameter description is
 saved alongside the edits. Preview and export always render from the original pixels.
 
