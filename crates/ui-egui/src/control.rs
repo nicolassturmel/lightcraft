@@ -27,12 +27,30 @@ pub struct ControlRequest {
     pub params: Value,
     pub reply: Sender<ControlResponse>,
     pub(crate) frame_reply: Option<Sender<Result<crate::remote::DesktopFrame, String>>>,
+    web: bool,
+    connection: Option<crate::remote::BrowserConnection>,
 }
 
 impl ControlRequest {
     pub fn new(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
         let (tx, rx) = std::sync::mpsc::channel();
-        (Self { method: method.into(), params, reply: tx, frame_reply: None }, rx)
+        (Self { method: method.into(), params, reply: tx, frame_reply: None, web: false, connection: None }, rx)
+    }
+
+    /// Browser commands retain their origin even when routed through the shared UI queue.
+    pub fn web(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        let (mut request, reply) = Self::new(method, params);
+        request.web = true;
+        (request, reply)
+    }
+
+    /// Only the native transport can create an approval request. JSON RPC cannot manufacture
+    /// the decision channel or approve a browser's own connection.
+    pub fn browser_connection(peer: String, code: String, expires: std::time::Instant) -> (Self, std::sync::mpsc::Receiver<bool>) {
+        let (mut request, _) = Self::new("ui.browserConnection", json!({}));
+        let (reply, decision) = std::sync::mpsc::channel();
+        request.connection = Some(crate::remote::BrowserConnection { peer, code, expires, reply });
+        (request, decision)
     }
 
     /// A bounded, binary preview request from the desktop's HTTP view. No file or JSON pixel
@@ -40,7 +58,7 @@ impl ControlRequest {
     pub fn desktop_frame() -> (Self, std::sync::mpsc::Receiver<Result<crate::remote::DesktopFrame, String>>) {
         let (reply, _) = std::sync::mpsc::channel();
         let (tx, rx) = std::sync::mpsc::channel();
-        (Self { method: "ui.desktopFrame".into(), params: json!({}), reply, frame_reply: Some(tx) }, rx)
+        (Self { method: "ui.desktopFrame".into(), params: json!({}), reply, frame_reply: Some(tx), web: false, connection: None }, rx)
     }
 }
 
@@ -127,6 +145,7 @@ pub fn inspect(app: &LightcraftApp, ctx: &egui::Context) -> Value {
         "applePhotos": {"primary":app.session.apple_library.is_some(), "open":app.apple_photos.open,
             "loaded":app.session.apple_library.as_ref().is_some_and(|l| l.loaded), "error":app.apple_photos.error,
             "network":false, "downloadErrors":app.apple_photos.download_errors, "lastCopy":app.apple_photos.last_copy},
+        "browserConnections": app.browser_connections.iter().map(|r| json!({"peer":r.peer,"code":r.code})).collect::<Vec<_>>(),
         // every long-running task in flight, as the activity stack shows them (`activity.list`)
         "activity": app.session.activity.list(),
         // commands waiting on a native file dialog shown off the UI thread (`pick`)
@@ -183,10 +202,17 @@ fn widget_rect(app: &LightcraftApp, id: &str) -> Option<egui::Rect> {
 }
 
 pub fn handle(app: &mut LightcraftApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
+    if req.web && !app.browser_connections.is_empty() && !matches!(req.method.as_str(), "ui.inspect" | "ui.widgets" | "engine.commands") {
+        return err("Confirmez la connexion directement dans LightCraft sur le Mac.");
+    }
     let p = &req.params;
     let s = |k: &str| p.get(k).and_then(Value::as_str);
     let f = |k: &str| p.get(k).and_then(Value::as_f64);
     match req.method.as_str() {
+        "ui.browserConnection" => match &req.connection {
+            Some(connection) => wrap(crate::remote::request_connection(app, ctx, connection.clone())),
+            None => err("browser approval requires the native transport"),
+        },
         "ui.desktopFrame" => match &req.frame_reply {
             Some(reply) => Outcome::DesktopFrame(reply.clone()),
             None => err("desktop frames require the binary Web view transport"),

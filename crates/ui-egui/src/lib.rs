@@ -261,6 +261,7 @@ pub struct LightcraftApp {
     pending_screenshots: Vec<PendingShot>,
     pending_desktop_frame: Option<Sender<Result<remote::DesktopFrame, String>>>,
     pub(crate) remote_input: remote::InputState,
+    pub(crate) browser_connections: Vec<remote::BrowserConnection>,
     screenshot_token: u64,
     /// Offscreen context for headless screenshots of the windowed app.
     shadow: Option<headless::HeadlessView>,
@@ -378,6 +379,7 @@ impl LightcraftApp {
             pending_screenshots: vec![],
             pending_desktop_frame: None,
             remote_input: remote::InputState::default(),
+            browser_connections: vec![],
             screenshot_token: 0,
             shadow: None,
             synthetic: vec![],
@@ -1128,6 +1130,7 @@ impl LightcraftApp {
             panels::dialogs::show(self, &ctx);
             panels::library_problem::show(self, &ctx);
             apple_photos::show(self, &ctx);
+            remote::show_connections(self, &ctx);
             panels::toast(self, &ctx);
             self.widgets = widgets::take_registry(&ctx);
             self.end_frame(&ctx, t0);
@@ -1144,6 +1147,7 @@ impl LightcraftApp {
         panels::dialogs::show(self, &ctx);
         panels::library_problem::show(self, &ctx);
         apple_photos::show(self, &ctx);
+        remote::show_connections(self, &ctx);
         export_task::poll(self, &ctx);
         panels::activity::show(self, &ctx);
         pick::poll(self, &ctx);

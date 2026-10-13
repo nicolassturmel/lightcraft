@@ -12,6 +12,7 @@ button { cursor: pointer; } button:hover { background: #444; } button:focus-visi
 canvas { display: block; max-width: 100%; max-height: 100%; object-fit: contain; outline: none; touch-action: none; user-select: none; }
 #notice { position: absolute; padding: 24px 30px; max-width: 440px; background: #242424eb; border: 1px solid #505050; border-radius: 6px; text-align: center; box-shadow: 0 6px 30px #0008; }
 #notice p { line-height: 1.5; margin-top: 0; } #notice[hidden] { display: none; }
+#pair-code { font-size: 28px; font-weight: 600; letter-spacing: 3px; color: #f3b84c; }
 #commands { position: fixed; top: 50px; right: 14px; width: min(480px, calc(100vw - 28px)); max-height: calc(100dvh - 70px); display: flex; flex-direction: column; background: #262626; border: 1px solid #555; border-radius: 6px; box-shadow: 0 8px 30px #000b; }
 #commands[hidden] { display: none; } .commands-head { display: flex; gap: 8px; padding: 12px; } .commands-head input { flex: 1; min-width: 0; }
 #command-list { overflow: auto; padding: 0 12px 12px; } #command-list h3 { font-size: 11px; color: #aaa; font-weight: 500; text-transform: uppercase; margin: 16px 0 7px; }

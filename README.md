@@ -18,6 +18,8 @@ metadata; **⌘S** creates an edited copy with its recipe in a Photos album name
 See [Apple integration](docs/apple-integration.md) for permissions, build instructions and usage.
 The [desktop Web view](docs/web.md#desktop-view), enabled with `--web 8080`, shares the Mac’s
 engine, Photos library, selection, history and previews; the browser is a thin controller.
+Open the ordinary Mac IP address from another device, request access, and approve the matching
+code in the Mac window. A special connection link is no longer required.
 Selecting another preset replaces the previous look; its reversible parameter description is
 saved alongside the edits. Preview and export always render from the original pixels.
 

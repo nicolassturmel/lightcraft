@@ -7,6 +7,63 @@ use std::hash::{Hash, Hasher};
 pub const MAX_FRAME_EDGE: usize = 1920;
 const MAX_EVENTS: usize = 64;
 
+#[derive(Clone)]
+pub(crate) struct BrowserConnection {
+    pub peer: String,
+    pub code: String,
+    pub expires: std::time::Instant,
+    pub reply: std::sync::mpsc::Sender<bool>,
+}
+
+pub(crate) fn request_connection(app: &mut LightcraftApp, ctx: &egui::Context, request: BrowserConnection) -> Result<Value, String> {
+    app.browser_connections.retain(|r| r.expires > std::time::Instant::now());
+    if request.expires <= std::time::Instant::now() || app.browser_connections.len() >= 8 {
+        let _ = request.reply.send(false);
+        return Err("browser connection request expired or the queue is full".into());
+    }
+    // Browser input is suspended while approval is visible. Clear already-queued browser
+    // gestures so even an authorized browser cannot click another device's approval button.
+    app.synthetic.clear();
+    app.remote_input = InputState::default();
+    app.browser_connections.push(request);
+    ctx.request_repaint();
+    Ok(json!({"pending":true}))
+}
+
+pub(crate) fn show_connections(app: &mut LightcraftApp, ctx: &egui::Context) {
+    app.browser_connections.retain(|r| r.expires > std::time::Instant::now());
+    let Some(request) = app.browser_connections.first() else { return };
+    let mut choice = None;
+    egui::Window::new("Connexion au navigateur")
+        .id(egui::Id::new("browserConnection"))
+        .order(egui::Order::Foreground)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.label(format!("Un navigateur à l’adresse {} veut piloter LightCraft.", request.peer));
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(format!("Code : {}", request.code)).strong().size(24.0));
+            ui.label("Vérifiez que ce code apparaît sur votre navigateur. L’accès partage votre photothèque et permet de modifier vos retouches pendant cette session.");
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                for (id, label, allowed) in [("webConnection:deny", "Refuser", false), ("webConnection:allow", "Autoriser", true)] {
+                    let button = ui.button(label);
+                    crate::widgets::register(ctx, format!("button:{id}"), button.rect);
+                    if button.clicked() {
+                        choice = Some(allowed);
+                    }
+                }
+            });
+        });
+    ctx.request_repaint_after(std::time::Duration::from_secs(1));
+    if let Some(allowed) = choice {
+        let request = app.browser_connections.remove(0);
+        let _ = request.reply.send(allowed);
+    }
+}
+
 pub struct DesktopFrame {
     pub image: egui::ColorImage,
     /// Logical egui coordinates, independent of the preview's pixel density.
@@ -155,6 +212,9 @@ fn events(params: &Value, viewport: egui::Vec2) -> Result<Vec<Event>, String> {
 }
 
 pub(crate) fn input(app: &mut LightcraftApp, ctx: &egui::Context, params: &Value) -> Result<Value, String> {
+    if !app.browser_connections.is_empty() {
+        return Err("Confirmez la connexion directement dans LightCraft sur le Mac.".into());
+    }
     if params.get("state").and_then(Value::as_str) != Some(state_key(app).as_str()) {
         return Err("The Mac view changed; wait for its updated preview before continuing.".into());
     }
@@ -202,6 +262,56 @@ pub(crate) fn input(app: &mut LightcraftApp, ctx: &egui::Context, params: &Value
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn connection_approval_is_native_only_and_releases_waiting_browser() {
+        let mut app = LightcraftApp::new(lightcraft_engine::Session::new(), crate::Services::default());
+        app.ui.settings.gpu = false;
+        let mut h = crate::headless::Headless::new(app, [1600.0, 1000.0], 1.0);
+        for _ in 0..4 {
+            h.step();
+        }
+        let (request, decision) = crate::ControlRequest::browser_connection(
+            "192.0.2.5".into(),
+            "ABC123".into(),
+            std::time::Instant::now() + std::time::Duration::from_secs(120),
+        );
+        h.app.synthetic.push(Event::PointerButton {
+            pos: egui::pos2(500.0, 500.0),
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        });
+        crate::control::handle(&mut h.app, &h.view.ctx, &request);
+        assert!(h.app.synthetic.is_empty());
+        assert!(decision.try_recv().is_err());
+        assert!(input(&mut h.app, &h.view.ctx, &json!({"events":[{"kind":"focus","focused":false}]})).is_err());
+        for _ in 0..2 {
+            h.step();
+        }
+        let (browser, _) = crate::ControlRequest::web("ui.clickWidget", json!({"id":"button:webConnection:allow"}));
+        assert!(matches!(crate::control::handle(&mut h.app, &h.view.ctx, &browser), crate::control::Outcome::Done(v) if v["ok"] == false));
+        assert!(decision.try_recv().is_err());
+        let response = h.request("ui.clickWidget", json!({"id":"button:webConnection:allow"}), std::time::Duration::from_secs(10));
+        assert_eq!(response["ok"], true);
+        for _ in 0..4 {
+            h.step();
+        }
+        assert!(decision.recv_timeout(std::time::Duration::from_secs(1)).unwrap());
+        assert!(h.app.browser_connections.is_empty());
+        let (fake, _) = crate::ControlRequest::new("ui.browserConnection", json!({"peer":"192.0.2.5","code":"ABC123"}));
+        assert!(matches!(crate::control::handle(&mut h.app, &h.view.ctx, &fake), crate::control::Outcome::Done(v) if v["ok"] == false));
+    }
+
+    #[test]
+    fn expired_connections_never_open_an_approval_window() {
+        let mut app = LightcraftApp::new(lightcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        let (request, decision) = crate::ControlRequest::browser_connection("192.0.2.5".into(), "ABC123".into(), std::time::Instant::now());
+        assert!(matches!(crate::control::handle(&mut app, &ctx, &request), crate::control::Outcome::Done(v) if v["ok"] == false));
+        assert!(!decision.recv_timeout(std::time::Duration::from_secs(1)).unwrap());
+        assert!(app.browser_connections.is_empty());
+    }
+
     #[test]
     fn browser_undo_uses_the_desktop_history_even_with_native_menu_accelerators() {
         let mut app = LightcraftApp::new(lightcraft_engine::Session::with_demo(), crate::Services::default());

@@ -10,6 +10,7 @@ let viewport = null;
 let frameState = null;
 let connected = false;
 let connecting = false;
+let pairing = false;
 let fetching = false;
 let sending = false;
 let nextFrame = 0;
@@ -25,11 +26,21 @@ if (key) history.replaceState(null, '', location.pathname);
 function show(message, offline = false) {
   document.getElementById('message').textContent = message;
   notice.hidden = !message;
+  document.getElementById('pair').hidden = true;
+  document.getElementById('pair-code').hidden = true;
+  document.getElementById('retry').hidden = false;
   if (offline) { connected = false; viewport = null; input = []; held.clear(); heldKeys.clear(); status.textContent = 'Déconnecté'; }
+}
+function requestPrompt() {
+  show('Pour ouvrir la vue du Mac, demande l’accès puis confirme la connexion dans LightCraft sur le Mac.', true);
+  document.getElementById('pair').hidden = false;
+  document.getElementById('retry').hidden = true;
+  status.textContent = 'Accès au Mac';
 }
 async function fetchBounded(path, options = {}) {
   const response = await fetch(path, { cache: 'no-store', credentials: 'same-origin', ...options, signal: AbortSignal.timeout(15000) });
-  if (response.status === 401) { const error = new Error('Autorisation requise. Ouvre cette vue sur le Mac ou utilise son lien de connexion.'); error.auth = true; throw error; }
+  if (response.status === 401) { const error = new Error('Demande l’accès puis confirme la connexion dans LightCraft sur le Mac.'); error.auth = true; throw error; }
+  if (response.status === 429) throw new Error('Trop de demandes de connexion. Réessaie dans deux minutes.');
   if (!response.ok) { const error = new Error('Le Mac ne répond pas encore.'); error.busy = response.status === 503; throw error; }
   return response;
 }
@@ -40,7 +51,7 @@ async function rpc(method, params = {}) {
   return data.result;
 }
 async function connect() {
-  if (connecting) return;
+  if (connecting || pairing) return;
   connecting = true;
   connection++;
   show('Connexion à LightCraft sur le Mac…');
@@ -51,8 +62,34 @@ async function connect() {
     status.textContent = 'Vue du Mac';
     nextFrame = 0;
     await updateFrame();
-  } catch (error) { show(error.auth ? error.message : 'Connexion interrompue. Vérifie que LightCraft est ouvert sur le Mac.', true); }
+  } catch (error) { if (error.auth) requestPrompt(); else show('Connexion interrompue. Vérifie que LightCraft est ouvert sur le Mac.', true); }
   finally { connecting = false; }
+}
+async function requestAccess() {
+  if (pairing || connecting || connected) return;
+  pairing = true;
+  const generation = ++connection;
+  let approved = false;
+  show('Envoi de la demande au Mac…', true);
+  document.getElementById('retry').hidden = true;
+  try {
+    let response = await (await fetchBounded('/api/pair', { method: 'POST' })).json();
+    const deadline = performance.now() + 125000;
+    while (generation === connection) {
+      if (response.status === 'approved') { approved = true; break; }
+      if (response.status === 'denied') throw new Error('Connexion refusée sur le Mac. Tu pourras refaire une demande dans deux minutes.');
+      if (response.status !== 'pending' || performance.now() >= deadline) throw new Error('La demande a expiré. Reconnecte-toi pour en envoyer une nouvelle.');
+      if (!/^[A-F0-9]{6}$/.test(response.code)) throw new Error('Code de connexion invalide.');
+      show('Dans LightCraft sur le Mac, vérifie ce code puis clique sur « Autoriser ».', true);
+      const code = document.getElementById('pair-code'); code.textContent = response.code; code.hidden = false;
+      document.getElementById('retry').hidden = true;
+      status.textContent = 'À confirmer sur le Mac';
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      response = await (await fetchBounded('/api/pair')).json();
+    }
+  } catch (error) { show(error.message, true); }
+  finally { pairing = false; }
+  if (approved) await connect();
 }
 function fit() {
   if (!viewport) return;
@@ -86,7 +123,7 @@ async function updateFrame() {
     show('');
     status.textContent = 'Vue du Mac';
   } catch (error) {
-    if (!error.busy) { show(error.auth ? error.message : 'Connexion interrompue. Vérifie que LightCraft est ouvert sur le Mac.', true); }
+    if (!error.busy) { if (error.auth) requestPrompt(); else show('Connexion interrompue. Vérifie que LightCraft est ouvert sur le Mac.', true); }
   } finally {
     fetching = false;
     nextFrame = performance.now() + (performance.now() - lastActivity < 1800 ? 70 : 500);
@@ -162,13 +199,14 @@ window.addEventListener('blur', () => { release(); queue({ kind: 'focus', focuse
 window.addEventListener('focus', () => { if (document.activeElement === canvas) queue({ kind: 'focus', focused: true }); });
 window.addEventListener('resize', fit);
 document.getElementById('retry').addEventListener('click', connect);
+document.getElementById('pair').addEventListener('click', requestAccess);
 document.getElementById('fullscreen').addEventListener('click', async () => { try { if (document.fullscreenElement) await document.exitFullscreen(); else await document.documentElement.requestFullscreen(); } catch { show('Le plein écran n’est pas disponible dans ce navigateur.'); } });
 document.getElementById('share').addEventListener('click', async () => {
   try {
     const info = await (await fetchBounded('/api/info')).json();
-    if (!info.shareUrl) throw new Error('Lien indisponible.');
-    try { await navigator.clipboard.writeText(info.shareUrl); status.textContent = 'Lien copié'; }
-    catch { const field = document.getElementById('share-link'); field.value = info.shareUrl; field.hidden = false; field.focus(); field.select(); }
+    if (!info.address) throw new Error('Adresse indisponible.');
+    try { await navigator.clipboard.writeText(info.address); status.textContent = 'Adresse copiée'; }
+    catch { const field = document.getElementById('share-link'); field.value = info.address; field.hidden = false; field.focus(); field.select(); }
   } catch (error) { show(error.message); }
 });
 function listCommands() {

@@ -9,9 +9,9 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
-        mpsc::Sender,
+        mpsc::{Receiver, Sender, TryRecvError},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const MAX_HEAD: usize = 16384;
@@ -20,6 +20,9 @@ const MAX_JSON: usize = 2 * 1024 * 1024;
 const MAX_IMAGE: usize = 16 * 1024 * 1024;
 const MAX_CONNECTIONS: usize = 16;
 const COOKIE: &str = "lightcraft_view";
+const PAIR_COOKIE: &str = "lightcraft_pair";
+const MAX_PAIRINGS: usize = 8;
+const PAIR_TTL: Duration = Duration::from_secs(120);
 const HTML: &[u8] = include_bytes!("../web/index.html");
 const JS: &[u8] = include_bytes!("../web/view.js");
 const CSS: &[u8] = include_bytes!("../web/view.css");
@@ -35,6 +38,15 @@ struct State {
     ctx: egui::Context,
     frame: Mutex<()>,
     share_origin: String,
+    pairings: Mutex<Vec<Pairing>>,
+}
+struct Pairing {
+    key: String,
+    code: String,
+    peer: IpAddr,
+    expires: Instant,
+    reply: Receiver<bool>,
+    decision: Option<bool>,
 }
 struct Request {
     method: String,
@@ -66,6 +78,10 @@ impl Response {
         self.headers.push(("Set-Cookie".into(), format!("{COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict")));
         self
     }
+    fn pairing_cookie(mut self, token: &str) -> Self {
+        self.headers.push(("Set-Cookie".into(), format!("{PAIR_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=120")));
+        self
+    }
 }
 struct Limited {
     bytes: Vec<u8>,
@@ -88,15 +104,18 @@ pub fn start(config: Config, tx: Sender<ControlRequest>, ctx: egui::Context) -> 
     let listener = TcpListener::bind(SocketAddr::new(config.bind, config.port))
         .map_err(|e| format!("Web view cannot listen on {}:{}: {e}", config.bind, config.port))?;
     let address = listener.local_addr().map_err(|e| e.to_string())?;
-    let mut secret = [0_u8; 32];
-    getrandom::fill(&mut secret).map_err(|e| format!("Web session key unavailable: {e}"))?;
-    let token = secret.iter().map(|v| format!("{v:02x}")).collect();
+    let token = random_key()?;
     let host = if address.ip().is_unspecified() { network_address().unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)) } else { address.ip() };
     let share_origin = format!("http://{}", SocketAddr::new(host, address.port()));
-    let state = Arc::new(State { token, tx, ctx, frame: Mutex::new(()), share_origin });
+    let state = Arc::new(State { token, tx, ctx, frame: Mutex::new(()), share_origin, pairings: Mutex::new(vec![]) });
     log::info!("desktop Web view listening on {address}; local view: http://127.0.0.1:{}/", address.port());
     std::thread::spawn(move || accept(listener, state));
     Ok(format!("http://127.0.0.1:{}/", address.port()))
+}
+fn random_key() -> Result<String, String> {
+    let mut secret = [0_u8; 32];
+    getrandom::fill(&mut secret).map_err(|e| format!("Web session key unavailable: {e}"))?;
+    Ok(secret.iter().map(|v| format!("{v:02x}")).collect())
 }
 fn network_address() -> Option<IpAddr> {
     // UDP connect only chooses a local route; no packet or photo is sent.
@@ -204,12 +223,15 @@ fn equal(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0_u8, |difference, (a, b)| difference | (a ^ b)) == 0
 }
 fn authorized(request: &Request, state: &State) -> bool {
-    let cookie = request
-        .headers
-        .get("cookie")
-        .and_then(|v| v.split(';').find_map(|p| p.trim().split_once('=').filter(|(name, _)| *name == COOKIE).map(|(_, value)| value)));
+    let cookie = cookie(request, COOKIE);
     let bearer = request.headers.get("authorization").and_then(|v| v.strip_prefix("Bearer "));
     cookie.into_iter().chain(bearer).any(|v| equal(v, &state.token))
+}
+fn cookie<'a>(request: &'a Request, name: &str) -> Option<&'a str> {
+    request
+        .headers
+        .get("cookie")
+        .and_then(|v| v.split(';').find_map(|p| p.trim().split_once('=').filter(|(key, _)| *key == name).map(|(_, value)| value)))
 }
 fn local_bootstrap(request: &Request, peer: SocketAddr, authority: &str) -> bool {
     if !peer.ip().is_loopback() {
@@ -225,6 +247,15 @@ fn route(request: Request, peer: SocketAddr, state: &State) -> Response {
     let public_asset = request.method == "GET" && matches!(request.path.as_str(), "/" | "/view.js" | "/view.css" | "/favicon.ico");
     if !public_asset && !same_origin(&request, authority) {
         return Response::error(403, "cross-origin desktop requests are refused");
+    }
+    if request.path == "/api/pair" && matches!(request.method.as_str(), "POST" | "GET") {
+        if request.method == "POST" && !request.headers.contains_key("origin") {
+            return Response::error(403, "connection requests require their browser origin");
+        }
+        if authorized(&request, state) {
+            return Response::json(200, json!({"ok":true,"status":"approved"}));
+        }
+        return pair(&request, peer, state);
     }
     if request.method == "GET" {
         match request.path.as_str() {
@@ -242,12 +273,13 @@ fn route(request: Request, peer: SocketAddr, state: &State) -> Response {
         }
     }
     if !authorized(&request, state) {
-        return Response::error(401, "Open the view on the Mac, or use its shared connection link.");
+        return Response::error(401, "Request access and approve this browser in LightCraft on the Mac.");
     }
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/api/info") => Response::json(
             200,
             json!({"ok":true,"mode":"desktop-view","engine":"desktop","library":"desktop",
+            "address":format!("{}/",state.share_origin),
             "shareUrl":format!("{}/#key={}",state.share_origin,state.token)}),
         ),
         ("GET", "/api/frame") => frame(state),
@@ -291,8 +323,61 @@ fn route(request: Request, peer: SocketAddr, state: &State) -> Response {
         _ => Response::error(404, "unknown Web view endpoint"),
     }
 }
+fn pair(request: &Request, peer: SocketAddr, state: &State) -> Response {
+    let mut pairings = match state.pairings.lock() {
+        Ok(pairings) => pairings,
+        Err(_) => return Response::error(503, "connection requests unavailable"),
+    };
+    pairings.retain(|p| p.expires > Instant::now());
+    let key = cookie(request, PAIR_COOKIE);
+    if let Some(index) = pairings.iter().position(|p| p.peer == peer.ip() && key.is_some_and(|key| equal(key, &p.key))) {
+        let Some(pairing) = pairings.get_mut(index) else { return Response::error(503, "connection request unavailable") };
+        if pairing.decision.is_none() {
+            match pairing.reply.try_recv() {
+                Ok(allowed) => pairing.decision = Some(allowed),
+                Err(TryRecvError::Disconnected) => pairing.decision = Some(false),
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        let status = match pairing.decision {
+            Some(true) => "approved",
+            Some(false) => "denied",
+            None => "pending",
+        };
+        let response = Response::json(200, json!({"ok":true,"status":status,"code":pairing.code}));
+        if pairing.decision == Some(true) {
+            pairings.remove(index);
+            return response.cookie(&state.token);
+        }
+        return response;
+    }
+    if request.method == "GET" {
+        return Response::json(200, json!({"ok":true,"status":"expired"}));
+    }
+    // Bounded pending requests, including refusals until expiry, prevent a client from flooding
+    // the desktop with dialogs. A refused request cannot be upgraded by retrying or guessing a code.
+    if pairings.len() >= MAX_PAIRINGS || pairings.iter().filter(|p| p.peer == peer.ip()).count() >= 2 {
+        return Response::error(429, "too many connection requests; retry in two minutes");
+    }
+    let key = match random_key() {
+        Ok(key) => key,
+        Err(e) => return Response::error(503, e),
+    };
+    let code = match key.get(..6) {
+        Some(code) => code.to_ascii_uppercase(),
+        None => return Response::error(503, "connection code unavailable"),
+    };
+    let expires = Instant::now() + PAIR_TTL;
+    let (approval, reply) = ControlRequest::browser_connection(peer.ip().to_string(), code.clone(), expires);
+    if state.tx.send(approval).is_err() {
+        return Response::error(503, "the desktop has closed");
+    }
+    pairings.push(Pairing { key: key.clone(), code: code.clone(), peer: peer.ip(), expires, reply, decision: None });
+    state.ctx.request_repaint();
+    Response::json(200, json!({"ok":true,"status":"pending","code":code})).pairing_cookie(&key)
+}
 fn call(state: &State, method: &str, params: Value) -> Result<Value, String> {
-    let (request, reply) = ControlRequest::new(method, params);
+    let (request, reply) = ControlRequest::web(method, params);
     state.tx.send(request).map_err(|_| "the desktop has closed")?;
     state.ctx.request_repaint();
     reply.recv_timeout(Duration::from_secs(15)).map_err(|_| "the desktop did not answer; check the Mac window".into())
@@ -368,6 +453,7 @@ fn write_response(stream: &mut impl Write, response: Response) -> std::io::Resul
         404 => "Not Found",
         413 => "Payload Too Large",
         415 => "Unsupported Media Type",
+        429 => "Too Many Requests",
         503 => "Service Unavailable",
         _ => "Gateway Timeout",
     };
@@ -398,6 +484,7 @@ mod tests {
                 ctx: egui::Context::default(),
                 frame: Mutex::new(()),
                 share_origin: "http://192.0.2.2:8080".into(),
+                pairings: Mutex::new(vec![]),
             },
             rx,
         )
@@ -434,6 +521,91 @@ mod tests {
         let mut r = request("GET", "/");
         r.headers.insert("host".into(), "rebind.example:8080".into());
         assert_eq!(route(r, local, &s).code, 403);
+    }
+    fn pairing_request(method: &str, cookie_value: Option<&str>) -> Request {
+        let mut r = request(method, "/api/pair");
+        r.headers.insert("origin".into(), "http://127.0.0.1:8080".into());
+        if let Some(value) = cookie_value {
+            r.headers.insert("cookie".into(), value.into());
+        }
+        r
+    }
+    fn status(response: &Response) -> String {
+        serde_json::from_slice::<Value>(&response.body).unwrap()["status"].as_str().unwrap().to_string()
+    }
+    #[test]
+    fn ordinary_address_can_pair_without_a_link_but_only_after_native_approval() {
+        let (s, rx) = state();
+        let peer = "192.0.2.5:12000".parse().unwrap();
+        let response = route(pairing_request("POST", None), peer, &s);
+        assert_eq!(status(&response), "pending");
+        let pending_cookie = response.headers.iter().find(|(name, _)| name == "Set-Cookie").unwrap().1.split(';').next().unwrap().to_string();
+        assert!(pending_cookie.starts_with("lightcraft_pair="));
+        assert_eq!(status(&route(pairing_request("GET", Some(&pending_cookie)), peer, &s)), "pending");
+        let mut frame = request("GET", "/api/frame");
+        frame.headers.insert("cookie".into(), pending_cookie.clone());
+        assert_eq!(route(frame, peer, &s).code, 401);
+        let mut app = lightcraft_ui_egui::LightcraftApp::new(lightcraft_engine::Session::new(), lightcraft_ui_egui::Services::default());
+        app.ui.settings.gpu = false;
+        let mut h = lightcraft_ui_egui::headless::Headless::new(app, [1600.0, 1000.0], 1.0);
+        for _ in 0..4 {
+            h.step();
+        }
+        let approval = rx.try_recv().unwrap();
+        lightcraft_ui_egui::control::handle(&mut h.app, &h.view.ctx, &approval);
+        for _ in 0..2 {
+            h.step();
+        }
+        h.request("ui.clickWidget", json!({"id":"button:webConnection:allow"}), Duration::from_secs(10));
+        for _ in 0..4 {
+            h.step();
+        }
+        let response = route(pairing_request("GET", Some(&pending_cookie)), peer, &s);
+        assert_eq!(status(&response), "approved");
+        let session_cookie = response.headers.iter().find(|(name, _)| name == "Set-Cookie").unwrap().1.split(';').next().unwrap().to_string();
+        let mut connect = request("GET", "/api/connect");
+        connect.headers.insert("cookie".into(), session_cookie);
+        assert_eq!(route(connect, peer, &s).code, 200);
+        assert!(s.pairings.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn pairing_refusal_expiry_ip_binding_and_request_limits_are_enforced() {
+        let (s, rx) = state();
+        let peer = "192.0.2.5:12000".parse().unwrap();
+        let response = route(pairing_request("POST", None), peer, &s);
+        let cookie = response.headers[0].1.split(';').next().unwrap().to_string();
+        assert_eq!(status(&route(pairing_request("GET", Some(&cookie)), "192.0.2.6:12000".parse().unwrap(), &s)), "expired");
+        let approval = rx.try_recv().unwrap();
+        let mut app = lightcraft_ui_egui::LightcraftApp::new(lightcraft_engine::Session::new(), lightcraft_ui_egui::Services::default());
+        app.ui.settings.gpu = false;
+        let mut h = lightcraft_ui_egui::headless::Headless::new(app, [1600.0, 1000.0], 1.0);
+        for _ in 0..4 {
+            h.step();
+        }
+        lightcraft_ui_egui::control::handle(&mut h.app, &h.view.ctx, &approval);
+        for _ in 0..2 {
+            h.step();
+        }
+        h.request("ui.clickWidget", json!({"id":"button:webConnection:deny"}), Duration::from_secs(10));
+        for _ in 0..4 {
+            h.step();
+        }
+        let refused = route(pairing_request("GET", Some(&cookie)), peer, &s);
+        assert_eq!(status(&refused), "denied");
+        assert!(refused.headers.is_empty());
+        assert_eq!(status(&route(pairing_request("POST", Some(&cookie)), peer, &s)), "denied");
+        assert_eq!(route(pairing_request("POST", None), peer, &s).code, 200);
+        assert_eq!(route(pairing_request("POST", None), peer, &s).code, 429);
+        for pairing in s.pairings.lock().unwrap().iter_mut() {
+            pairing.expires = Instant::now();
+        }
+        assert_eq!(status(&route(pairing_request("GET", Some(&cookie)), peer, &s)), "expired");
+        let mut foreign = pairing_request("POST", None);
+        foreign.headers.insert("origin".into(), "https://foreign.example".into());
+        assert_eq!(route(foreign, peer, &s).code, 403);
+        let mut missing = pairing_request("POST", None);
+        missing.headers.remove("origin");
+        assert_eq!(route(missing, peer, &s).code, 403);
     }
     #[test]
     fn cross_origin_actions_and_unexposed_methods_never_reach_the_ui() {

@@ -23,6 +23,7 @@ of presets/exposure. Three-photo native checks cover overcast and coastal/urban 
 structures and classification errors remain, so broad semantic sky parity is still open. Presets replace the previous selected
 look using a reversible parameter description in the per-photo JSON; Amount preserves manual edits.
 The native desktop Web view now shares this session’s engine, library, history and previews; the
+ordinary LAN address connects with native code approval, without a required keyed link. The
 standalone WASM mode retains its separate storage limitations. See [web.md](web.md#desktop-view).
 See [apple-integration.md](apple-integration.md). The portable gaps and scores below remain
 open; no broader camera-coverage claim is made from one Canon R8 test.
@@ -86,6 +87,7 @@ Beta-blocking gaps (B) total **~230–430 h**; with the stability and platform w
 
 ## Revision history
 
+- 2026-10-13: WEB.2 permits the ordinary LAN address with a matching-code approval in the Mac window; refusals/expiry and browser self-approval are covered. Scores unchanged.
 - 2026-10-13: WEB.1 adds a thin Web view of the native session (shared Photos library/commands/history/previews); standalone WASM gaps and parity scores remain unchanged.
 
 - 2026-10-12: APPLE.7 replaces native sky-colour/horizon guesses with Apple’s pinned Apache-2.0 semantic model, bundled for offline Vision/Core ML inference; three-photo checks; portable gaps and scores unchanged.

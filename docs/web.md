@@ -39,19 +39,31 @@ Keyboard, text input, scroll, right-click and slider/brush/crop gestures are for
 file pickers and other OS dialogs appear on the Mac. Browser navigation shortcuts stay with the
 browser; ordinary editing shortcuts use the desktop’s bindings.
 
-Localhost establishes an HttpOnly, SameSite session cookie. **Copier le lien** produces a keyed
-LAN connection link; its fragment is removed after the browser establishes the session. Keys
-change when the app restarts. Image/command endpoints require that session and refuse foreign
-origins/DNS rebinding. Responses are not stored in the browser cache. The server bounds headers,
-JSON bodies, frame dimensions, output size, connections and concurrent frame work.
+Localhost connects directly. From another device, open the Mac's ordinary address
+`http://<Mac-IP>:8080/` and click **Demander l’accès**. The browser and LightCraft on the Mac show
+the same six-character code: compare it, then choose **Autoriser** in the Mac window. The view
+opens automatically; reloads use the existing HttpOnly, SameSite session cookie. No special link
+is required. **Copier l’adresse** copies the ordinary LAN address. Approval lasts for the running
+desktop session; restarting LightCraft requires a new approval. A refused request stays refused
+until its two-minute expiry. Requests are limited to eight total and two per client IP.
 
-Protocol: `GET /api/connect`, `GET /api/frame` (JPEG with viewport/cursor/state headers),
+The pending cookie cannot read previews or run commands. Approval only reaches the server through
+the native UI's decision channel, never a public JSON method. While approval is visible, browser
+commands/input are suspended and already-queued gestures are cleared, so another connected
+browser cannot press the approval button. Native input and loopback control remain available.
+The previous fragment-key links remain compatible. Image/command endpoints require the approved
+session and refuse foreign origins/DNS rebinding. Responses are not stored in the browser cache.
+The server bounds headers, JSON bodies, frame dimensions, output size, connections and frame work.
+
+Protocol: `GET /api/connect`, `POST /api/pair` (request), `GET /api/pair` (poll native decision),
+`GET /api/frame` (JPEG with viewport/cursor/state headers),
 `POST /api/rpc {method, params}`. Native `ui.webInput` validates complete input batches before
 queuing them; the binary `ControlRequest::desktop_frame` supplies previews without temporary
 image files or JSON pixel arrays. See `apps/lightcraft/src/web_server.rs`, `apps/lightcraft/web/`
 and `crates/ui-egui/src/remote.rs`.
 
-Tests cover transport bounds, authentication/origin isolation, shared command dispatch, Retina
+Tests cover direct-address pairing, native approval/refusal, expiry, request bounds, IP binding,
+blocked browser self-approval, transport bounds, authentication/origin isolation, shared command dispatch, Retina
 preview bounds, stale/invalid input, gesture expiry and native-menu keyboard routing. End-to-end
 checks use the browser and TCP control channel on the same temporary native session, including
 selection, exposure, undo/redo, native masks and unchanged input-file hashes.

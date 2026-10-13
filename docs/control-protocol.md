@@ -177,6 +177,13 @@ rules apply equally to both forms.
 
 ## Desktop Web transport (2026-10-13)
 
+An ordinary LAN URL can request access with `POST /api/pair`; `GET /api/pair` polls the native
+matching-code approval. Pending cookies cannot access frames/commands. `ui.browserConnection`
+requires a private decision channel and cannot be created through JSON RPC. While approval is
+shown, browser input/commands are suspended; native/loopback control can operate the window
+(`button:webConnection:allow` / `button:webConnection:deny`). `ui.inspect.browserConnections`
+reports pending peer IPs and comparison codes, never authentication keys.
+
 `lightcraft --web 8080 --web-bind 0.0.0.0 --control 18088` serves the thin browser view and the
 loopback JSON-lines channel on the **same** desktop control queue. HTTP only exposes an
 authenticated subset of methods; it cannot request arbitrary screenshot file writes.
