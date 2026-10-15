@@ -14,6 +14,9 @@ use std::{
     sync::Arc,
 };
 
+mod changes;
+pub use changes::{PhotosChanges, PhotosUpdate, PhotosWatch};
+
 #[cfg(target_os = "macos")]
 pub use lightcraft_apple::PHOTOS_ORIGINAL_REQUIRED as ORIGINAL_REQUIRED;
 #[cfg(not(target_os = "macos"))]
@@ -1018,6 +1021,71 @@ mod tests {
         s.apply_photos_snapshot(projected(&["a", "b"], None)).unwrap();
         s.selection = Selection::single(s.apple_library.as_ref().unwrap().asset_ids["a"]);
         s
+    }
+
+    #[test]
+    fn incremental_changes_keep_unaffected_pixels_edits_identity_and_undo() {
+        let mut s = photos_session();
+        let a = s.active().unwrap();
+        s.execute("develop.set", &json!({"control":"light.exposure","value":1.25})).unwrap();
+        let before = s.catalog.photo(a).unwrap().clone();
+        let pixels = Arc::new(lightcraft_raster::Rgb32f { width: 8, height: 6, data: vec![[0.1, 0.2, 0.3]; 48] });
+        s.media.insert(a, SourceLevel::Full, pixels.clone());
+        let mut incoming = projected(&["b", "c"], None).snapshot;
+        incoming.assets[0].name = "renamed.jpg".into();
+        incoming.albums[1].name = "Changed album".into();
+        incoming.albums[1].photos.push("a".into());
+        let changes = PhotosChanges { assets: incoming.assets, removed: vec![], albums: Some(incoming.albums) };
+        assert_eq!(s.apply_photos_changes(changes).unwrap()["changed"], true);
+        assert_eq!(s.catalog.len(), 3);
+        assert_eq!(s.catalog.photo(s.apple_library.as_ref().unwrap().asset_ids["b"]).unwrap().file_name, "renamed.jpg");
+        assert!(Arc::ptr_eq(&before, s.catalog.photo(a).unwrap()), "unrelated photo records must keep their identity");
+        assert!(Arc::ptr_eq(&pixels, &s.media.get(a, SourceLevel::Full).unwrap()));
+        assert_eq!(s.active(), Some(a));
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.develop_of(a).unwrap().light.exposure, 0.0);
+    }
+
+    #[test]
+    fn empty_and_identical_change_events_do_not_invalidate_the_catalogue() {
+        let mut s = photos_session();
+        let before = s.catalog.clone();
+        let revision = before.revision;
+        assert_eq!(s.apply_photos_changes(PhotosChanges::default()).unwrap()["changed"], false);
+        let incoming = projected(&["a", "b"], None).snapshot;
+        let changes = PhotosChanges { assets: incoming.assets, removed: vec![], albums: Some(incoming.albums) };
+        assert_eq!(s.apply_photos_changes(changes).unwrap()["changed"], false);
+        assert_eq!(s.catalog.revision, revision);
+        assert!(Arc::ptr_eq(s.catalog.photo(PhotoId(1)).unwrap(), before.photo(PhotoId(1)).unwrap()));
+    }
+
+    #[test]
+    fn malformed_incremental_batches_are_atomic() {
+        let mut s = photos_session();
+        let before = s.catalog.clone();
+        let mut assets = projected(&["c", "d"], None).snapshot.assets;
+        assets[1].width = 0;
+        assert!(s.apply_photos_changes(PhotosChanges { assets, removed: vec!["b".into()], albums: None }).is_err());
+        assert_eq!(s.catalog, before);
+        assert!(Arc::ptr_eq(s.catalog.photo(PhotoId(1)).unwrap(), before.photo(PhotoId(1)).unwrap()));
+        let mut albums = projected(&["a"], None).snapshot.albums;
+        albums[0].parent = Some("album".into());
+        assert!(s.apply_photos_changes(PhotosChanges { albums: Some(albums), ..Default::default() }).is_err());
+        assert_eq!(s.catalog, before);
+    }
+
+    #[test]
+    fn incremental_removal_prunes_albums_and_selection_but_keeps_adjustment_drafts() {
+        let mut s = photos_session();
+        let a = s.active().unwrap();
+        s.execute("develop.set", &json!({"control":"light.exposure","value":1.25})).unwrap();
+        s.apply_photos_changes(PhotosChanges { removed: vec!["a".into()], ..Default::default() }).unwrap();
+        assert_eq!(s.catalog.len(), 1);
+        assert_eq!(s.active(), None);
+        assert!(s.catalog.albums().all(|album| !album.photos.contains(&a)));
+        s.apply_photos_changes(PhotosChanges { assets: projected(&["a"], None).snapshot.assets, ..Default::default() }).unwrap();
+        assert_eq!(s.apple_library.as_ref().unwrap().asset_ids["a"], a);
+        assert_eq!(s.develop_of(a).unwrap().light.exposure, 1.25);
     }
 
     #[test]

@@ -80,14 +80,137 @@ func originalResource(_ asset: PHAsset) -> PHAssetResource? {
         ?? originals.first { $0.type == .photo }
 }
 
-// This is a transient metadata projection, never a second photo catalogue.
-func snapshotPhotos(_ request: Request) async throws -> [String: Any] {
-    let status = try await authorizePhotos()
-    let destination = URL(fileURLWithPath: try required(request.output, "output"))
-    guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
-        throw BridgeError("Cannot create the Photos metadata response")
+// Metadata only: resource descriptors never retrieve original bytes or enable iCloud access.
+func photosOptions() -> PHFetchOptions {
+    let options = PHFetchOptions()
+    options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+    return options
+}
+
+func photosRow(_ asset: PHAsset, _ formatter: ISO8601DateFormatter) -> [String: Any]? {
+    guard let resource = originalResource(asset) else { return nil }
+    var row: [String: Any] = ["id": asset.localIdentifier, "name": resource.originalFilename,
+        "width": asset.pixelWidth, "height": asset.pixelHeight, "favorite": asset.isFavorite,
+        "raw": UTType(resource.uniformTypeIdentifier)?.conforms(to: .rawImage) == true,
+        "revision": asset.modificationDate.map { formatter.string(from: $0) } ?? "",
+        "format": (resource.originalFilename as NSString).pathExtension.uppercased()]
+    if let date = asset.creationDate { row["captured"] = formatter.string(from: date) }
+    return row
+}
+
+// Keep PhotoKit fetch results alive so PHChange can describe the next incremental change.
+final class PhotosProjection {
+    var assets: PHFetchResult<PHAsset>?
+    var rows: [String: [String: Any]] = [:]
+    var albums: [[String: Any]] = []
+    var collections: [PHCollection] = []
+    var roots: PHFetchResult<PHCollection>?
+    var others: PHFetchResult<PHAssetCollection>?
+    var children: [PHFetchResult<PHCollection>] = []
+    var members: [String: PHFetchResult<PHAsset>] = [:]
+    let formatter = ISO8601DateFormatter()
+
+    init() { formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds] }
+
+    func initialize() throws {
+        let result = PHAsset.fetchAssets(with: .image, options: photosOptions())
+        guard result.count <= 500_000 else { throw BridgeError("This Photos library exceeds the 500,000 image session limit") }
+        assets = result
+        rows.removeAll()
+        result.enumerateObjects { asset, _, _ in
+            if let row = photosRow(asset, self.formatter) { self.rows[asset.localIdentifier] = row }
+        }
+        try readAlbums()
     }
-    let file = try FileHandle(forWritingTo: destination)
+
+    func readAlbums() throws {
+        albums.removeAll(); collections.removeAll(); children.removeAll(); members.removeAll()
+        var seen = Set<String>()
+        func collection(_ value: PHCollection, parent: String?, depth: Int) throws {
+            guard depth < 32 else { throw BridgeError("Photos album folders are too deeply nested") }
+            guard seen.insert(value.localIdentifier).inserted else { return }
+            guard seen.count <= 20_000 else { throw BridgeError("Photos has too many albums for this session") }
+            var row: [String: Any] = ["id": value.localIdentifier, "name": value.localizedTitle ?? "Album"]
+            if let parent { row["parent"] = parent }
+            if let album = value as? PHAssetCollection {
+                let result = PHAsset.fetchAssets(in: album, options: photosOptions())
+                row["photos"] = try memberIDs(result); row["folder"] = false
+                members[value.localIdentifier] = result
+            } else if value is PHCollectionList {
+                row["photos"] = [String](); row["folder"] = true
+            } else { return }
+            collections.append(value); albums.append(row)
+            if let folder = value as? PHCollectionList {
+                let result = PHCollection.fetchCollections(in: folder, options: nil)
+                children.append(result)
+                for i in 0..<result.count { try collection(result.object(at: i), parent: folder.localIdentifier, depth: depth + 1) }
+            }
+        }
+        let top = PHCollectionList.fetchTopLevelUserCollections(with: nil)
+        roots = top
+        for i in 0..<top.count { try collection(top.object(at: i), parent: nil, depth: 0) }
+        let all = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)
+        others = all
+        for i in 0..<all.count { try collection(all.object(at: i), parent: nil, depth: 0) }
+    }
+
+    func memberIDs(_ result: PHFetchResult<PHAsset>) throws -> [String] {
+        guard result.count <= 500_000 else { throw BridgeError("Photos album is too large") }
+        var ids: [String] = []
+        result.enumerateObjects { asset, _, _ in if asset.mediaType == .image { ids.append(asset.localIdentifier) } }
+        return ids
+    }
+
+    // Ignore local-resource availability/preview-only notifications whose projected metadata is identical.
+    func change(_ change: PHChange) throws -> (assets: [[String: Any]], removed: [String], albums: Bool) {
+        var changed: [[String: Any]] = []
+        var removed: [String] = []
+        if let before = assets, let detail = change.changeDetails(for: before) {
+            let after = detail.fetchResultAfterChanges
+            guard after.count <= 500_000 else { throw BridgeError("This Photos library exceeds the image session limit") }
+            assets = after
+            var candidates: [PHAsset] = []
+            if detail.hasIncrementalChanges {
+                candidates = detail.insertedObjects + detail.changedObjects
+                removed = detail.removedObjects.map { $0.localIdentifier }
+            } else {
+                // PhotoKit can explicitly invalidate a fetch result. Only that event needs reconciliation.
+                var seen = Set<String>()
+                after.enumerateObjects { asset, _, _ in candidates.append(asset); seen.insert(asset.localIdentifier) }
+                removed = rows.keys.filter { !seen.contains($0) }
+            }
+            for id in removed { rows.removeValue(forKey: id) }
+            for asset in candidates {
+                let id = asset.localIdentifier
+                if let row = photosRow(asset, formatter) {
+                    if rows[id].map({ NSDictionary(dictionary: $0).isEqual(to: row) }) != true {
+                        rows[id] = row; changed.append(row)
+                    }
+                } else if rows.removeValue(forKey: id) != nil { removed.append(id) }
+            }
+        }
+        let beforeAlbums = albums
+        let structureChanged = roots.map { change.changeDetails(for: $0) != nil } == true
+            || others.map { change.changeDetails(for: $0) != nil } == true
+            || children.contains { change.changeDetails(for: $0) != nil }
+            || collections.contains { change.changeDetails(for: $0) != nil }
+        if structureChanged { try readAlbums() }
+        else {
+            for i in albums.indices {
+                guard let id = albums[i]["id"] as? String, let before = members[id],
+                      let detail = change.changeDetails(for: before) else { continue }
+                members[id] = detail.fetchResultAfterChanges
+                albums[i]["photos"] = try memberIDs(detail.fetchResultAfterChanges)
+            }
+        }
+        return (changed, removed, !NSArray(array: beforeAlbums).isEqual(to: albums))
+    }
+}
+
+// Acknowledged files provide bounded backpressure; stdout carries only small JSON-line headers.
+func writePhotosMetadata(_ output: URL, assets: [[String: Any]], albums: [[String: Any]]?, removed: [String]?, authorization: String?) throws {
+    guard FileManager.default.createFile(atPath: output.path, contents: nil) else { throw BridgeError("Cannot create the Photos metadata response") }
+    let file = try FileHandle(forWritingTo: output)
     defer { try? file.close() }
     var bytes = 0
     func write(_ data: Data) throws {
@@ -96,58 +219,116 @@ func snapshotPhotos(_ request: Request) async throws -> [String: Any] {
         try file.write(contentsOf: data)
     }
     func object(_ value: Any) throws { try write(JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed])) }
-    let options = PHFetchOptions()
-    options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-    let assets = PHAsset.fetchAssets(with: .image, options: options)
-    guard assets.count <= 500_000 else { throw BridgeError("This Photos library exceeds the 500,000 image session limit") }
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    try write(Data("{\"authorization\":".utf8)); try object(authorizationName(status))
-    try write(Data(",\"assets\":[".utf8))
-    var count = 0
-    for i in 0..<assets.count {
-        let asset = assets.object(at: i)
-        guard let resource = originalResource(asset) else { continue }
-        if count > 0 { try write(Data(",".utf8)) }; count += 1
-        var row: [String: Any] = ["id": asset.localIdentifier, "name": resource.originalFilename,
-            "width": asset.pixelWidth, "height": asset.pixelHeight, "favorite": asset.isFavorite,
-            "raw": UTType(resource.uniformTypeIdentifier)?.conforms(to: .rawImage) == true,
-            "revision": asset.modificationDate.map { formatter.string(from: $0) } ?? "",
-            "format": (resource.originalFilename as NSString).pathExtension.uppercased()]
-        if let date = asset.creationDate { row["captured"] = formatter.string(from: date) }
-        try object(row)
+    func array<T>(_ values: [T]) throws {
+        try write(Data("[".utf8))
+        for (i, value) in values.enumerated() { if i > 0 { try write(Data(",".utf8)) }; try object(value) }
+        try write(Data("]".utf8))
     }
-    try write(Data("],\"albums\":[".utf8))
-    var seen = Set<String>()
-    var albums = 0
-    func collection(_ value: PHCollection, parent: String?, depth: Int) throws {
-        guard depth < 32 else { throw BridgeError("Photos album folders are too deeply nested") }
-        guard seen.insert(value.localIdentifier).inserted else { return }
-        guard seen.count <= 20_000 else { throw BridgeError("Photos has too many albums for this session") }
-        var row: [String: Any] = ["id": value.localIdentifier, "name": value.localizedTitle ?? "Album"]
-        if let parent { row["parent"] = parent }
-        if let album = value as? PHAssetCollection {
-            var ids: [String] = []
-            let members = PHAsset.fetchAssets(in: album, options: options)
-            guard members.count <= 500_000 else { throw BridgeError("Photos album is too large") }
-            members.enumerateObjects { asset, _, _ in if asset.mediaType == .image { ids.append(asset.localIdentifier) } }
-            row["photos"] = ids; row["folder"] = false
-        } else if value is PHCollectionList {
-            row["photos"] = [String](); row["folder"] = true
-        } else { return }
-        if albums > 0 { try write(Data(",".utf8)) }; albums += 1
-        try object(row)
-        if let folder = value as? PHCollectionList {
-            let children = PHCollection.fetchCollections(in: folder, options: nil)
-            for i in 0..<children.count { try collection(children.object(at: i), parent: folder.localIdentifier, depth: depth + 1) }
+    try write(Data("{\"assets\":".utf8)); try array(assets)
+    if let authorization { try write(Data(",\"authorization\":".utf8)); try object(authorization) }
+    if let albums { try write(Data(",\"albums\":".utf8)); try array(albums) }
+    if let removed { try write(Data(",\"removed\":".utf8)); try array(removed) }
+    try write(Data("}".utf8))
+}
+
+func snapshotPhotos(_ request: Request) async throws -> [String: Any] {
+    let status = try await authorizePhotos()
+    let projection = PhotosProjection()
+    try projection.initialize()
+    try writePhotosMetadata(URL(fileURLWithPath: try required(request.output, "output")),
+        assets: projection.rows.keys.sorted().compactMap { projection.rows[$0] }, albums: projection.albums,
+        removed: nil, authorization: authorizationName(status))
+    return ["authorization": authorizationName(status), "photos": projection.rows.count, "albums": projection.albums.count]
+}
+
+final class PhotosObserver: NSObject, PHPhotoLibraryChangeObserver {
+    let queue = DispatchQueue(label: "lightcraft.photos.changes")
+    let projection = PhotosProjection()
+    let output: URL
+    let continuation: CheckedContinuation<Void, Error>
+    var pending: [String: [String: Any]] = [:]
+    var removed = Set<String>()
+    var albumsChanged = false
+    var awaitingAck = false
+    var finished = false
+    var sequence: UInt64 = 0
+
+    init(output: URL, continuation: CheckedContinuation<Void, Error>) { self.output = output; self.continuation = continuation }
+
+    func finish(_ error: Error? = nil) {
+        guard !finished else { return }
+        finished = true
+        PHPhotoLibrary.shared().unregisterChangeObserver(self)
+        if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+    }
+
+    func header(_ event: String) throws {
+        sequence += 1; awaitingAck = true
+        let data = try JSONSerialization.data(withJSONObject: ["event": event, "sequence": sequence])
+        try FileHandle.standardOutput.write(contentsOf: data + Data("\n".utf8))
+    }
+
+    func flush() throws {
+        guard !awaitingAck, !finished, !pending.isEmpty || !removed.isEmpty || albumsChanged else { return }
+        try writePhotosMetadata(output, assets: pending.keys.sorted().compactMap { pending[$0] },
+            albums: albumsChanged ? projection.albums : nil, removed: removed.sorted(), authorization: nil)
+        pending.removeAll(); removed.removeAll(); albumsChanged = false
+        try header("changes")
+    }
+
+    func photoLibraryDidChange(_ changeInstance: PHChange) {
+        queue.async {
+            guard !self.finished else { return }
+            do {
+                let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+                guard status == .authorized || status == .limited else { throw BridgeError("Photos access changed; use Refresh Photos after allowing access") }
+                let delta = try self.projection.change(changeInstance)
+                for id in delta.removed { self.pending.removeValue(forKey: id); self.removed.insert(id) }
+                for row in delta.assets {
+                    if let id = row["id"] as? String { self.removed.remove(id); self.pending[id] = row }
+                }
+                self.albumsChanged = self.albumsChanged || delta.albums
+                try self.flush()
+            } catch { self.finish(error) }
         }
     }
-    let roots = PHCollectionList.fetchTopLevelUserCollections(with: nil)
-    for i in 0..<roots.count { try collection(roots.object(at: i), parent: nil, depth: 0) }
-    let others = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)
-    for i in 0..<others.count { try collection(others.object(at: i), parent: nil, depth: 0) }
-    try write(Data("]}".utf8))
-    return ["authorization": authorizationName(status), "photos": count, "albums": albums]
+
+    func start() {
+        queue.async {
+            do {
+                // Register before the initial fetch; queued notifications cannot fall in a startup gap.
+                PHPhotoLibrary.shared().register(self)
+                try self.projection.initialize()
+                try writePhotosMetadata(self.output, assets: self.projection.rows.keys.sorted().compactMap { self.projection.rows[$0] },
+                    albums: self.projection.albums, removed: nil,
+                    authorization: authorizationName(PHPhotoLibrary.authorizationStatus(for: .readWrite)))
+                try self.header("snapshot")
+            } catch { self.finish(error) }
+        }
+        DispatchQueue.global().async {
+            while true {
+                var line = Data()
+                while line.count <= 32 {
+                    let byte = FileHandle.standardInput.readData(ofLength: 1)
+                    if byte.isEmpty { self.queue.async { self.finish() }; return }
+                    if byte.first == 10 { break }
+                    line.append(byte)
+                }
+                guard line == Data("next".utf8) else { self.queue.async { self.finish(BridgeError("Invalid Photos observer acknowledgement")) }; return }
+                self.queue.async {
+                    self.awaitingAck = false
+                    do { try self.flush() } catch { self.finish(error) }
+                }
+            }
+        }
+    }
+}
+
+func watchPhotos(_ output: URL) async throws {
+    _ = try await authorizePhotos()
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        PhotosObserver(output: output, continuation: continuation).start()
+    }
 }
 
 func photosAsset(_ id: String) throws -> PHAsset {
@@ -562,6 +743,10 @@ func semanticSkyMask(_ request: Request) throws -> [String: Any] {
         watchdog.resume()
         defer { watchdog.cancel() }
         do {
+            if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--photos-watch" {
+                try await watchPhotos(URL(fileURLWithPath: CommandLine.arguments[2]))
+                return
+            }
             let input = FileHandle.standardInput.readData(ofLength: 65_537)
             guard input.count <= 65_536 else { throw BridgeError("Oversized bridge request") }
             let request = try JSONDecoder().decode(Request.self, from: input)

@@ -1,6 +1,6 @@
 # Gaps: where LightCraft falls short of Lightroom
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (Photos refresh and explicit resource retrieval fixes; scores unchanged) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (PhotoKit change subscription; scores unchanged) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 Every known shortfall, one entry each, ranked by user impact (how many Lightroom users hit it, and
 how hard it blocks them), then by effort. **Agents pick work from the top** (the first entry nobody is
@@ -25,8 +25,9 @@ look using a reversible parameter description in the per-photo JSON; Amount pres
 The native desktop Web view now shares this session’s engine, library, history and previews; the
 ordinary LAN address connects with native code approval, without a required keyed link. The
 standalone WASM mode retains its separate storage limitations. See [web.md](web.md#desktop-view).
-Photos refreshes no longer run on a periodic timer or browser focus. Unchanged responses keep
-revision/caches stable; a response finishing during a gesture waits without rescanning. Original
+Photos uses one persistent PhotoKit change subscription after its initial read. Native/browser
+focus never rereads the library; only changed metadata updates. Untouched records and decoded
+pixels stay cached, and changes wait for active gestures. Errors require explicit reconnect. Original
 resource access is blocked until the per-photo Download original action, even for local originals.
 See [apple-integration.md](apple-integration.md). The portable gaps and scores below remain
 open; no broader camera-coverage claim is made from one Canon R8 test.
@@ -89,6 +90,8 @@ Beta-blocking gaps (B) total **~230–430 h**; with the stability and platform w
 - 2026-10-05: compressed NEF (#86). The older history is in [ROADMAP.md](../ROADMAP.md#progress-log).
 
 ## Revision history
+
+- 2026-10-15: APPLE.9 replaces native-focus refreshes with one persistent PhotoKit observer and bounded incremental events; unchanged metadata notifications are filtered and unaffected records/edits/caches survive. Scores unchanged.
 
 - 2026-10-15: APPLE.8 stops periodic/focus-driven refresh loops, preserves pending snapshots during gestures, avoids unchanged-projection invalidation, and requires explicit per-photo original retrieval. Scores unchanged.
 - 2026-10-13: WEB.2 permits the ordinary LAN address with a matching-code approval in the Mac window; refusals/expiry and browser self-approval are covered. Scores unchanged.

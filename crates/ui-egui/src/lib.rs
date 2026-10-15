@@ -1053,7 +1053,6 @@ impl LightcraftApp {
 
     /// Inject synthetic events (pointer events one per frame; key sequences up to the release).
     pub fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
-        self.apple_photos.native_focused = raw.focused;
         if self.remote_input.focused {
             raw.focused = true;
             if let Some(viewport) = raw.viewports.get_mut(&egui::ViewportId::ROOT) {

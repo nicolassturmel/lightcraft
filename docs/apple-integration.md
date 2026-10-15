@@ -60,14 +60,39 @@ main sidebar; allow LightCraft in **System Settings → Privacy & Security → P
 `.photoslibrary` internals are read.
 
 PhotoKit supplies image identifiers, filenames, dimensions, capture dates and user albums,
-including nested folders. Live Photos contribute the still image; videos are excluded. Refresh
-runs in the background at launch, on returning to the native app, through **Refresh Photos**, and
-after imports or copy saves. There is no periodic full-library scan. Browser canvas focus never
-counts as returning to the native app. A response arriving during a slider gesture waits for the
-gesture to end, without restarting the scan. An unchanged metadata response preserves the
-catalogue revision, decoded-source caches, selection, history and thumbnails. Stable native
-identifiers preserve edit drafts as Photos changes. A malformed or incomplete response keeps
-the current view. Refresh counters are available in `ui.inspect.applePhotos.refresh`.
+including nested folders. Live Photos contribute the still image; videos are excluded. One
+initial metadata snapshot establishes a persistent public
+[`PHPhotoLibraryChangeObserver`](https://developer.apple.com/documentation/photos/phphotolibrarychangeobserver)
+subscription. It retains the PhotoKit fetch results and uses `PHChange.changeDetails(for:)` to
+send additions, removals and changed metadata only. Album names, hierarchy and membership follow
+Photos changes, including imports and edited-copy saves. Resource-availability and preview
+notifications with identical projected metadata are ignored. Returning to the Mac window or
+focusing a browser never rereads the library, and no periodic Photos scan or polling request runs.
+PhotoKit can explicitly invalidate an incremental fetch result; that event reconciles its current
+metadata. **Refresh Photos** manually reconnects and rereads, including after permission changes
+or a stopped observer. Errors preserve the current library and show a message; they never cause
+an automatic restart loop.
+
+The helper registers before fetching and serializes subsequent change callbacks so startup
+changes are not lost. Small JSON-line headers reference a size-bounded temporary metadata file;
+acknowledgements and a bounded receiver provide backpressure while changes coalesce. The reader
+wakes the native UI on events. Updates arriving during a slider gesture wait until it ends. The
+engine validates the complete batch before applying it, preserves untouched photo identities,
+selection, undo history and decoded pixels for ordinary metadata updates, and invalidates pixels
+only for changed source revisions or removed photos. As with manual reconciliation, asset removal
+clears the transient undo/redo stacks to prevent restoring Photos-owned records; saved adjustment
+and history descriptions remain. Adjustment JSON remains independent. Closing or switching libraries
+unregisters the observer and terminates/reaps its helper. The desktop Web view uses this same
+subscription. Status is available in `ui.inspect.applePhotos.refresh`: `subscription`
+(`starting`, `watching`, `stopped`), `started` (initial/manual connections), `changesReceived`,
+`loading`, and `waitingForGesture`.
+
+APPLE.9 validation (2026-10-15): native regression tests cover focus changes, bounded observer
+headers/cleanup, atomic deltas, unchanged record identities, removals, and gesture deferral. An
+isolated native app with a counted synthetic bridge applies three add/rename/remove events
+through the real subscription transport, retains the selected decoded original and edits/undo,
+stays on one connection while idle, preserves the library on interruption, and reconnects only
+on the manual action. No original is retrieved except the one explicitly requested in that test.
 
 The grid and filmstrip show locally cached, rendered **Photos previews** via
 `PHImageManager.requestImage`, with network access disabled. Browsing does not retrieve RAW

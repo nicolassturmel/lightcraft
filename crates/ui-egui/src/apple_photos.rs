@@ -11,18 +11,23 @@ pub struct Browser {
     pub last_copy: Option<Value>,
     pub download_errors: BTreeMap<PhotoId, String>,
     attempted: bool,
-    focused: bool,
-    pub(crate) native_focused: bool,
     refreshed_at: f64,
     refresh_requested: bool,
-    pending_refresh: Option<(u64, lightcraft_engine::apple::LoadedLibrary)>,
+    pending_refresh: Option<(u64, lightcraft_engine::apple::PhotosUpdate)>,
+    watch: Option<lightcraft_engine::apple::PhotosWatch>,
+    watch_generation: Option<u64>,
+    loading: Option<lightcraft_engine::activity::TaskGuard>,
+    loading_started: f64,
+    changes_received: u64,
     refreshes_started: u64,
 }
 
 impl Browser {
     pub(crate) fn refresh_status(&self) -> Value {
         json!({"started":self.refreshes_started,"requested":self.refresh_requested,
-            "waitingForGesture":self.pending_refresh.is_some(),"lastCompletedAt":self.refreshed_at})
+            "waitingForGesture":self.pending_refresh.is_some(),"lastCompletedAt":self.refreshed_at,
+            "subscription":if self.watch.is_none() { "stopped" } else if self.loading.is_some() { "starting" } else { "watching" },
+            "changesReceived":self.changes_received,"loading":self.loading.is_some()})
     }
 }
 
@@ -73,48 +78,61 @@ pub fn ui_allowed(app: &LightcraftApp, id: &str) -> Result<(), String> {
 pub fn open(app: &mut LightcraftApp) -> Result<Value, String> {
     lightcraft_engine::apple::primary(&app.session)?;
     app.apple_photos.open = true;
-    if !app.tasks.is_running(READ) { start_refresh(app) } else { Ok(json!({"pending":true})) }
+    if app.apple_photos.loading.is_none() { start_refresh(app) } else { Ok(json!({"pending":true})) }
 }
 
 fn start_refresh(app: &mut LightcraftApp) -> Result<Value, String> {
     lightcraft_engine::apple::primary(&app.session)?;
-    if app.tasks.is_running(READ) || app.apple_photos.pending_refresh.is_some() {
+    if app.apple_photos.loading.is_some() || app.apple_photos.pending_refresh.is_some() {
         return Err("Apple Photos is already being read".into());
     }
     if app.session.interaction.is_some() {
         return Err("Finish the current adjustment before refreshing Photos".into());
     }
     let directory = app.session.apple_library.as_ref().and_then(|l| l.directory.clone());
-    let generation = app.session.library_generation();
+    let ctx = app.tasks.repaint.clone();
     app.apple_photos.attempted = true;
     app.apple_photos.refresh_requested = false;
+    app.apple_photos.watch = None;
+    app.apple_photos.loading = None;
+    let watch = lightcraft_engine::apple::PhotosWatch::start(directory, move || {
+        if let Some(ctx) = &ctx {
+            ctx.request_repaint();
+        }
+    })?;
+    app.apple_photos.watch = Some(watch);
+    app.apple_photos.watch_generation = Some(app.session.library_generation());
     app.apple_photos.error = None;
-    crate::tasks::spawn(
-        app,
-        READ,
-        Some("applePhotos"),
-        move || lightcraft_engine::apple::load_snapshot(directory.as_deref()),
-        move |app, ctx, result| {
-            if generation != app.session.library_generation() || app.session.apple_library.is_none() {
-                return;
-            }
-            finish_refresh(app, ctx, result);
-        },
-    )?;
+    app.apple_photos.loading_started = app.last_time;
+    app.apple_photos.loading = Some(app.session.activity.start("applePhotos", READ, lightcraft_engine::activity::Cancel::No));
     app.apple_photos.refreshes_started = app.apple_photos.refreshes_started.saturating_add(1);
-    Ok(json!({"pending":true, "backend":"applePhotos"}))
+    Ok(json!({"pending":true, "backend":"applePhotos", "subscription":true}))
 }
 
+#[cfg(test)]
 fn finish_refresh(app: &mut LightcraftApp, ctx: &egui::Context, result: Result<lightcraft_engine::apple::LoadedLibrary, String>) {
+    finish_update(app, ctx, result.map(lightcraft_engine::apple::PhotosUpdate::Snapshot));
+}
+
+fn finish_update(app: &mut LightcraftApp, ctx: &egui::Context, result: Result<lightcraft_engine::apple::PhotosUpdate, String>) {
     app.apple_photos.refreshed_at = app.last_time;
-    let result = result.and_then(|loaded| {
+    let result = result.and_then(|update| {
         if app.session.interaction.is_some() {
-            // Keep this completed response until the gesture ends; never rescan the library
-            // just because a slider was held while PhotoKit answered.
-            app.apple_photos.pending_refresh = Some((app.session.library_generation(), loaded));
-            Ok(json!({"pending":true}))
-        } else {
-            app.session.apply_photos_snapshot(loaded)
+            // Keep completed events until the gesture ends. Bounded transport backpressure
+            // coalesces further PhotoKit changes instead of queueing unbounded snapshots.
+            app.apple_photos.pending_refresh = Some((app.session.library_generation(), update));
+            return Ok(json!({"pending":true}));
+        }
+        match update {
+            lightcraft_engine::apple::PhotosUpdate::Snapshot(loaded) => {
+                app.apple_photos.loading = None;
+                app.session.apply_photos_snapshot(loaded)
+            }
+            lightcraft_engine::apple::PhotosUpdate::Changes(changes) => {
+                let report = app.session.apply_photos_changes(changes)?;
+                app.apple_photos.changes_received = app.apple_photos.changes_received.saturating_add(1);
+                Ok(report)
+            }
         }
     });
     match result {
@@ -127,6 +145,9 @@ fn finish_refresh(app: &mut LightcraftApp, ctx: &egui::Context, result: Result<l
             app.apple_photos.error = None;
         }
         Err(error) => {
+            app.apple_photos.watch = None;
+            app.apple_photos.loading = None;
+            app.apple_photos.pending_refresh = None;
             if let Some(state) = &mut app.session.apple_library {
                 state.error = Some(error.clone());
             }
@@ -154,7 +175,6 @@ fn start_copy(app: &mut LightcraftApp, params: &Value) -> Result<Value, String> 
                     app.toast(ctx, "Edited copy saved in Photos > LightCraft. Original unchanged.");
                 }
                 app.apple_photos.last_copy = Some(saved);
-                app.apple_photos.refresh_requested = true;
             }
             Err(error) => app.toast_error(ctx, error),
         },
@@ -295,7 +315,6 @@ fn start_import(app: &mut LightcraftApp, params: &Value) -> Result<Value, String
         |app, ctx, result| match result {
             Ok(_) => {
                 app.toast(ctx, "Images imported into Apple Photos");
-                app.apple_photos.refresh_requested = true;
             }
             Err(error) => app.toast_error(ctx, error),
         },
@@ -303,27 +322,39 @@ fn start_import(app: &mut LightcraftApp, params: &Value) -> Result<Value, String
     Ok(json!({"pending":true}))
 }
 
-/// Load at launch, reconcile on a real return to the app, or after an explicit Photos operation.
-/// No periodic full-library scan: an unchanged focused session stays idle.
+/// One initial subscription snapshot, then PhotoKit changes. Focus never rereads the library.
 pub fn tick(app: &mut LightcraftApp, ctx: &egui::Context) {
     if app.session.apple_library.is_none() {
+        app.apple_photos.watch = None;
+        app.apple_photos.pending_refresh = None;
+        app.apple_photos.loading = None;
+        app.apple_photos.attempted = false;
+        app.apple_photos.watch_generation = None;
         return;
     }
+    if app.apple_photos.watch_generation.is_some_and(|g| g != app.session.library_generation()) {
+        app.apple_photos = Browser::default();
+    }
     if app.session.interaction.is_none()
-        && let Some((generation, loaded)) = app.apple_photos.pending_refresh.take()
+        && let Some((generation, update)) = app.apple_photos.pending_refresh.take()
         && generation == app.session.library_generation()
     {
-        finish_refresh(app, ctx, Ok(loaded));
+        finish_update(app, ctx, Ok(update));
     }
-    // Browser canvas focus is virtual editing focus, not a return from the Photos app.
-    let focused = app.apple_photos.native_focused;
-    let loaded = app.session.apple_library.as_ref().is_some_and(|l| l.loaded);
-    let elapsed = app.last_time - app.apple_photos.refreshed_at;
-    app.apple_photos.refresh_requested |=
-        !app.apple_photos.attempted || (loaded && app.apple_photos.error.is_none() && focused && !app.apple_photos.focused && elapsed > 5.0);
-    app.apple_photos.focused = focused;
-    if app.apple_photos.refresh_requested
-        && !app.tasks.is_running(READ)
+    if app.apple_photos.pending_refresh.is_none()
+        && let Some(event) = app.apple_photos.watch.as_ref().and_then(|w| w.poll())
+    {
+        finish_update(app, ctx, event);
+    }
+    if app.apple_photos.loading.is_some() && app.apple_photos.pending_refresh.is_none() {
+        if app.last_time - app.apple_photos.loading_started > 180.0 {
+            finish_update(app, ctx, Err("Photos subscription timed out; check Photos access and use Refresh Photos".into()));
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+    if (!app.apple_photos.attempted || app.apple_photos.refresh_requested)
+        && app.apple_photos.loading.is_none()
         && app.apple_photos.pending_refresh.is_none()
         && app.session.interaction.is_none()
         && let Err(error) = start_refresh(app)
@@ -487,7 +518,7 @@ pub fn sidebar(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     }
     ui.add_space(8.0);
     ui.horizontal(|ui| {
-        if app.tasks.is_running(READ) {
+        if app.apple_photos.loading.is_some() {
             ui.spinner();
             ui.label("Reading Photos…");
         } else if ui.button("Refresh Photos").clicked() {
@@ -551,8 +582,6 @@ mod tests {
         session.apply_photos_snapshot(metadata()).unwrap();
         let mut app = LightcraftApp::new(session, crate::Services::default());
         app.apple_photos.attempted = true;
-        app.apple_photos.focused = true;
-        app.apple_photos.native_focused = true;
         let ctx = egui::Context::default();
         for time in [60.0, 120.0, 600.0] {
             app.last_time = time;
@@ -575,16 +604,51 @@ mod tests {
         app.apple_photos.attempted = true;
         app.last_time = 600.0;
         let ctx = egui::Context::default();
-        for focused in [true, false, true] {
+        for focused in [true, false, true, false, true] {
             app.remote_input.focused = focused;
             let mut raw = egui::RawInput { focused: false, ..Default::default() };
             app.raw_input_hook(&mut raw);
             assert_eq!(raw.focused, focused);
             let mut output = ctx.run_ui(raw, |ui| tick(&mut app, ui.ctx()));
             output.textures_delta.clear();
-            assert!(app.tasks.is_empty(), "the browser's virtual focus is not a return from Photos");
+            assert!(app.tasks.is_empty(), "neither browser nor native focus should reread Photos");
             assert!(!app.apple_photos.refresh_requested);
         }
+        for native_focus in [true, false, true, false, true] {
+            app.last_time += 10.0;
+            let mut output = ctx.run_ui(egui::RawInput { focused: native_focus, ..Default::default() }, |ui| tick(&mut app, ui.ctx()));
+            output.textures_delta.clear();
+            assert!(app.tasks.is_empty());
+            assert_eq!(app.apple_photos.refreshes_started, 0, "native focus must never start a subscription or scan");
+        }
+    }
+
+    #[test]
+    fn incremental_events_wait_for_the_current_gesture_without_a_new_snapshot() {
+        let mut session = lightcraft_engine::Session::new().with_apple_photos(None);
+        session.apply_photos_snapshot(metadata()).unwrap();
+        session.selection = lightcraft_engine::Selection::single(PhotoId(1));
+        session.begin_interaction("Exposure").unwrap();
+        session.execute("develop.set", &json!({"control":"light.exposure","value":1.25})).unwrap();
+        let mut app = LightcraftApp::new(session, crate::Services::default());
+        app.apple_photos.attempted = true;
+        let ctx = egui::Context::default();
+        let mut assets = metadata().snapshot.assets;
+        assets[0].name = "renamed.CR3".into();
+        let changes = lightcraft_engine::apple::PhotosChanges { assets, ..Default::default() };
+        finish_update(&mut app, &ctx, Ok(lightcraft_engine::apple::PhotosUpdate::Changes(changes)));
+        assert!(app.apple_photos.pending_refresh.is_some());
+        assert_eq!(app.apple_photos.changes_received, 0);
+        app.session.end_interaction().unwrap();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| tick(&mut app, ui.ctx()));
+        output.textures_delta.clear();
+        assert_eq!(app.session.catalog.photo(PhotoId(1)).unwrap().file_name, "renamed.CR3");
+        assert_eq!(app.session.develop_of(PhotoId(1)).unwrap().light.exposure, 1.25);
+        assert_eq!(app.apple_photos.changes_received, 1);
+        assert_eq!(app.apple_photos.refreshes_started, 0);
+        assert!(app.apple_photos.pending_refresh.is_none());
+        app.session.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(app.session.develop_of(PhotoId(1)).unwrap().light.exposure, 0.0);
     }
 
     #[test]
@@ -596,8 +660,6 @@ mod tests {
         session.execute("develop.set", &json!({"control":"light.exposure","value":1.25})).unwrap();
         let mut app = LightcraftApp::new(session, crate::Services::default());
         app.apple_photos.attempted = true;
-        app.apple_photos.focused = true;
-        app.apple_photos.native_focused = true;
         app.last_time = 100.0;
         let ctx = egui::Context::default();
         let mut incoming = metadata();

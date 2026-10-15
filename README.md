@@ -21,8 +21,9 @@ engine, Photos library, selection, history and previews; the browser is a thin c
 Open the ordinary Mac IP address from another device, request access, and approve the matching
 code in the Mac window. A special connection link is no longer required.
 Photos originals load only through each photo’s **Download original** button, including local
-ones. Selection and neighbour prefetch never retrieve them. Library refreshes run at launch,
-on returning to the Mac app, or explicitly; an idle session never rescans periodically.
+ones. Selection and neighbour prefetch never retrieve them. One initial metadata read starts a persistent PhotoKit change subscription. Only affected photos
+and albums update afterwards; changing focus never rereads the library. Refresh Photos explicitly
+reconnects the subscription.
 Selecting another preset replaces the previous look; its reversible parameter description is
 saved alongside the edits. Preview and export always render from the original pixels.
 

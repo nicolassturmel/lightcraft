@@ -8,6 +8,11 @@ use std::{path::Path, time::Duration};
 
 pub const PHOTOS_ORIGINAL_REQUIRED: &str = "Click Download original for this photo before editing. Selecting a photo never retrieves its original.";
 
+#[cfg(target_os = "macos")]
+mod watch;
+#[cfg(target_os = "macos")]
+pub use watch::{PhotosEvent, PhotosWatch};
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct RawMetadata {
     pub width: usize,
@@ -266,7 +271,7 @@ mod native {
         Ok(path)
     }
 
-    fn helper() -> Result<PathBuf, String> {
+    pub(super) fn helper() -> Result<PathBuf, String> {
         // Release bundles provide a signed sibling. Cargo/CLI builds extract the embedded helper.
         if let Some(sibling) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("lightcraft-apple")))
             && sibling.is_file()
@@ -289,7 +294,7 @@ mod native {
         Ok(path)
     }
 
-    fn bounded_read(path: &Path, cap: u64) -> Result<Vec<u8>, String> {
+    pub(super) fn bounded_read(path: &Path, cap: u64) -> Result<Vec<u8>, String> {
         let file = fs::File::open(path).map_err(|e| e.to_string())?;
         if file.metadata().map_err(|e| e.to_string())?.len() > cap {
             return Err("oversized Apple bridge response".into());

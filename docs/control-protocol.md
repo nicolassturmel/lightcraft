@@ -196,8 +196,13 @@ instructions are in [web.md](web.md#desktop-view).
 
 ### Photos refresh diagnostics (2026-10-15)
 
-`ui.inspect.applePhotos.refresh` reports `started` (native snapshot requests this launch),
-`requested`, `waitingForGesture`, and `lastCompletedAt` (application time). A stable focused
-session and Web canvas focus never initiate periodic scans. Unchanged responses preserve the
-catalogue revision and caches. Original retrieval requires `photo.downloadApplePhotosOriginal`;
-selection/render/mask/auto-adjustment/export requests cannot read even a local uncached original.
+`ui.inspect.applePhotos.refresh` reports `started` (initial/manual subscription connections),
+`subscription` (`starting`, `watching`, `stopped`), `changesReceived` (incremental events applied),
+`loading`, `requested`, `waitingForGesture`, and `lastCompletedAt` (application time). There is
+one initial metadata snapshot per connection, followed by public PhotoKit change notifications.
+Native/window/browser focus never triggers a scan. Only affected asset and album records update;
+untouched photo identities, cached pixels and edits survive. Undo survives metadata changes;
+asset removal clears the transient undo/redo stacks. Errors stop the subscription
+and retain the library; `library.applePhotos` explicitly reconnects. Original retrieval still
+requires `photo.downloadApplePhotosOriginal`; selecting a photo, native masks and exports cannot
+implicitly copy a local or cloud original.

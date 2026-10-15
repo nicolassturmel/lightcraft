@@ -1,6 +1,6 @@
 # Target-app parity: LightCraft vs Adobe Lightroom
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (Photos refresh and explicit original retrieval fixes; scores unchanged) · **Target:** Adobe Lightroom Classic 15.5 (August 2026) and Lightroom 9.6 (desktop)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (PhotoKit change subscription; scores unchanged) · **Target:** Adobe Lightroom Classic 15.5 (August 2026) and Lightroom 9.6 (desktop)
 
 The authoritative assessment of how close LightCraft is to Lightroom. The row-by-row checklist is
 [parity-checklist.md](parity-checklist.md); the ranked work list is [gaps.md](gaps.md); deep areas
@@ -297,6 +297,7 @@ P2 items 12–25 h; look tuning, performance, packaging, hardening 25–45 h.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-15 | minor | APPLE.9: persistent PhotoKit change observer, incremental asset/album updates, no native-focus reread, bounded/coalesced events and explicit reconnect on errors. Scores unchanged. |
 | 2026-10-15 | minor | APPLE.8: no periodic or browser-focus Photos rescan; completed responses wait for gestures, identical metadata preserves caches, and selection/prefetch/processing cannot retrieve originals before the per-photo action. Scores unchanged. |
 | 2026-10-13 | minor | WEB.2: ordinary LAN address pairs with matching-code approval on the Mac; refusal, expiry and browser self-approval guards verified. Scores unchanged. |
 | 2026-10-13 | minor | WEB.1: thin browser view shares the native engine, Photos library, commands, undo history and previews; standalone WASM limitations and overall scores unchanged. |
