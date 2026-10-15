@@ -6,6 +6,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::{path::Path, time::Duration};
 
+pub const PHOTOS_ORIGINAL_REQUIRED: &str = "Click Download original for this photo before editing. Selecting a photo never retrieves its original.";
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct RawMetadata {
     pub width: usize,
@@ -76,6 +78,11 @@ pub fn photos_recipe(asset: &str, network: bool) -> Result<Value, String> {
 
 /// Decode directly through PhotoKit. The resource file exists only for the duration of decoding.
 pub fn decode_photos(asset: &str, max_edge: usize, network: bool) -> Result<RawImage, String> {
+    // Resource access itself is explicit, even when Photos already has a local original.
+    // A network=false request must not silently copy/decode it on selection or prefetch.
+    if !network {
+        return Err(PHOTOS_ORIGINAL_REQUIRED.into());
+    }
     #[cfg(target_os = "macos")]
     return native::decode_image(serde_json::json!({"operation":"photos-decode", "asset":asset,
         "maxEdge":max_edge.min(100_000), "network":network}));
@@ -442,6 +449,12 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selecting_an_uncached_original_is_rejected_before_any_native_helper_call() {
+        let error = decode_photos("never-contact-PhotoKit-for-this-asset", 2560, false).err().unwrap();
+        assert_eq!(error, PHOTOS_ORIGINAL_REQUIRED);
+    }
 
     #[test]
     fn cloud_original_errors_explain_the_per_photo_action_without_hiding_other_failures() {

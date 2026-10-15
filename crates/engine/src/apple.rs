@@ -14,6 +14,11 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(target_os = "macos")]
+pub use lightcraft_apple::PHOTOS_ORIGINAL_REQUIRED as ORIGINAL_REQUIRED;
+#[cfg(not(target_os = "macos"))]
+pub const ORIGINAL_REQUIRED: &str = "Click Download original for this photo before editing. Selecting a photo never retrieves its original.";
+
 #[derive(Default)]
 pub struct Library {
     pub loaded: bool,
@@ -26,6 +31,8 @@ pub struct Library {
     pub asset_ids: BTreeMap<String, PhotoId>,
     pub album_ids: BTreeMap<String, AlbumId>,
     drafts: BTreeMap<String, Draft>,
+    /// Last accepted PhotoKit metadata only. Edits and decoded-original caches are independent.
+    snapshot_key: Option<lightcraft_preview::Hash128>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -72,14 +79,14 @@ struct DraftFile {
     draft: Draft,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct Snapshot {
     pub authorization: String,
     pub assets: Vec<Asset>,
     pub albums: Vec<PhotosAlbum>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct Asset {
     pub id: String,
     pub name: String,
@@ -93,7 +100,7 @@ pub struct Asset {
     pub captured: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct PhotosAlbum {
     pub id: String,
     pub name: String,
@@ -107,6 +114,30 @@ pub struct LoadedLibrary {
     pub snapshot: Snapshot,
     drafts: BTreeMap<String, Draft>,
     pub warnings: Vec<String>,
+}
+
+impl LoadedLibrary {
+    /// A transient metadata response. The native loader also attaches on-disk adjustment drafts.
+    pub fn metadata(snapshot: Snapshot) -> Self {
+        Self { snapshot, drafts: BTreeMap::new(), warnings: vec![] }
+    }
+}
+
+fn snapshot_key(snapshot: &Snapshot) -> Result<lightcraft_preview::Hash128, String> {
+    // Hash the structured metadata without allocating another copy of a large library response.
+    struct Digest(lightcraft_preview::Hasher128);
+    impl std::io::Write for Digest {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.update(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut digest = Digest(lightcraft_preview::Hasher128::new());
+    serde_json::to_writer(&mut digest, snapshot).map_err(|e| e.to_string())?;
+    Ok(digest.0.finish())
 }
 
 pub fn enabled(_: &Session) -> Result<(), String> {
@@ -310,6 +341,15 @@ impl Session {
         }
         self.persist().map_err(|e| e.to_string())?;
         let current = self.apple_library.as_ref().ok_or("Apple Photos is not the active library")?;
+        let snapshot_key = snapshot_key(&loaded.snapshot)?;
+        if current.loaded && current.snapshot_key == Some(snapshot_key) {
+            if let Some(state) = self.apple_library.as_mut() {
+                state.error = None;
+            }
+            return Ok(
+                json!({"backend":"applePhotos", "photos":self.catalog.len(), "albums":self.catalog.albums().count(), "changed":false, "warnings":loaded.warnings}),
+            );
+        }
         let mut ids = current.asset_ids.clone();
         let mut albums = current.album_ids.clone();
         let drafts = if current.loaded { current.drafts.clone() } else { loaded.drafts };
@@ -412,11 +452,14 @@ impl Session {
         state.drafts = drafts;
         state.authorization = loaded.snapshot.authorization;
         state.loaded = true;
+        state.snapshot_key = Some(snapshot_key);
         state.error = None;
         self.pending_log.clear();
         self.visible_key = None;
         self.total = None;
-        Ok(json!({"backend":"applePhotos", "photos":self.catalog.len(), "albums":self.catalog.albums().count(), "warnings":loaded.warnings}))
+        Ok(
+            json!({"backend":"applePhotos", "photos":self.catalog.len(), "albums":self.catalog.albums().count(), "changed":true, "warnings":loaded.warnings}),
+        )
     }
 
     /// Persist only the touched assets' editable annotations, not source paths or library contents.
@@ -489,6 +532,9 @@ fn draft_photos(op: &Op, ids: &mut Vec<PhotoId>) {
 }
 
 pub fn decode_photo(asset: &str, max_edge: usize, network: bool) -> Result<crate::media::DecodedSource, String> {
+    if !network {
+        return Err(ORIGINAL_REQUIRED.into());
+    }
     #[cfg(target_os = "macos")]
     {
         let decoded = lightcraft_apple::decode_photos(asset, max_edge, network)?;
@@ -972,6 +1018,46 @@ mod tests {
         s.apply_photos_snapshot(projected(&["a", "b"], None)).unwrap();
         s.selection = Selection::single(s.apple_library.as_ref().unwrap().asset_ids["a"]);
         s
+    }
+
+    #[test]
+    fn unchanged_refresh_keeps_revision_edits_selection_and_decoded_sources() {
+        let mut s = photos_session();
+        let id = s.active().unwrap();
+        s.execute("develop.set", &json!({"control":"light.exposure", "value":1.25})).unwrap();
+        let pixels = Arc::new(lightcraft_raster::Rgb32f { width: 8, height: 6, data: vec![[0.1, 0.2, 0.3]; 48] });
+        s.media.insert(id, SourceLevel::Full, pixels.clone());
+        let revision = s.catalog.revision;
+        let photo = s.catalog.photo(id).unwrap().clone();
+        let generation = s.library_generation();
+        for _ in 0..3 {
+            assert_eq!(s.apply_photos_snapshot(projected(&["a", "b"], None)).unwrap()["changed"], false);
+            assert_eq!(s.catalog.revision, revision);
+            assert!(Arc::ptr_eq(s.catalog.photo(id).unwrap(), &photo));
+            assert_eq!(s.active(), Some(id));
+            assert_eq!(s.library_generation(), generation);
+            assert!(Arc::ptr_eq(&s.media.get(id, SourceLevel::Full).unwrap(), &pixels));
+        }
+        let mut changed = projected(&["a", "b"], None);
+        changed.snapshot.albums[1].name = "A renamed Photos album".into();
+        assert_eq!(s.apply_photos_snapshot(changed).unwrap()["changed"], true);
+        assert!(s.catalog.revision > revision);
+        assert_eq!(s.catalog.photo(id).unwrap().develop.light.exposure, 1.25);
+        assert!(s.media.has_source(id, SourceLevel::Full));
+    }
+
+    #[test]
+    fn selection_editing_prefetch_masks_and_export_cannot_read_an_original_implicitly() {
+        let mut s = photos_session();
+        let id = s.active().unwrap();
+        for level in [SourceLevel::Thumb, SourceLevel::Preview, SourceLevel::Full] {
+            let photo = s.catalog.photo(id).unwrap().clone();
+            assert_eq!(s.media.source_ref(&photo, level).load_source().err().unwrap(), ORIGINAL_REQUIRED);
+        }
+        s.execute("develop.set", &json!({"control":"light.exposure", "value":0.5})).unwrap();
+        assert_eq!(s.render_job(id, 1200, 800, false, true).unwrap().source.load_source().err().unwrap(), ORIGINAL_REQUIRED);
+        assert_eq!(s.source_now(id, SourceLevel::Preview).err().unwrap(), ORIGINAL_REQUIRED);
+        assert_eq!(s.media.origin_ref(&s.catalog.photo(id).unwrap().source, 6000).load_source().err().unwrap(), ORIGINAL_REQUIRED);
     }
 
     #[test]

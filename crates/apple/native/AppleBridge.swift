@@ -197,6 +197,9 @@ func previewPhotos(_ request: Request) async throws -> [String: Any] {
 
 @available(macOS 12.0, *)
 func decodePhotos(_ request: Request) async throws -> [String: Any] {
+    guard request.network == true else {
+        throw BridgeError("Click Download original for this photo before editing. Selecting a photo never retrieves its original.")
+    }
     _ = try await authorizePhotos()
     let asset = try photosAsset(required(request.asset, "asset"))
     guard let original = originalResource(asset) else { throw BridgeError("Photos has no readable image resource") }

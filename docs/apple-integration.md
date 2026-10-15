@@ -61,9 +61,13 @@ main sidebar; allow LightCraft in **System Settings → Privacy & Security → P
 
 PhotoKit supplies image identifiers, filenames, dimensions, capture dates and user albums,
 including nested folders. Live Photos contribute the still image; videos are excluded. Refresh
-runs in the background at launch, on returning to the app, periodically, and after imports or
-copy saves. Stable native identifiers preserve selection and edit drafts as Photos adds,
-removes or reorganizes images. A malformed or incomplete response keeps the current view.
+runs in the background at launch, on returning to the native app, through **Refresh Photos**, and
+after imports or copy saves. There is no periodic full-library scan. Browser canvas focus never
+counts as returning to the native app. A response arriving during a slider gesture waits for the
+gesture to end, without restarting the scan. An unchanged metadata response preserves the
+catalogue revision, decoded-source caches, selection, history and thumbnails. Stable native
+identifiers preserve edit drafts as Photos changes. A malformed or incomplete response keeps
+the current view. Refresh counters are available in `ui.inspect.applePhotos.refresh`.
 
 The grid and filmstrip show locally cached, rendered **Photos previews** via
 `PHImageManager.requestImage`, with network access disabled. Browsing does not retrieve RAW
@@ -71,7 +75,11 @@ resources. These thumbnails never become development or export sources, so they 
 original pixels or apply baked Photos adjustments twice. A cached LightCraft render is preferred
 when available. After downloading an original, the grid can render the current LightCraft edits.
 
-Originals are retrieved through `PHAssetResourceManager`. RAW+JPEG pairs prefer the
+Originals are retrieved through `PHAssetResourceManager` **only after the per-photo Download
+original action**, including when the original is already local. Selection, neighbour prefetch,
+mask/auto-adjustment preparation and export cannot implicitly request a resource. The editing
+view offers that action until decoded original pixels are available; Photos browsing previews
+remain in the library. RAW+JPEG pairs prefer the
 RAW original, including `alternatePhoto`; rendered assets use their current Photos rendition.
 The public PhotoKit resource API requires a short-lived decode file. Its enclosing temporary
 directory is removed after decoding, errors or bridge timeouts. There is no permanent import of
@@ -79,12 +87,14 @@ Photos originals, no `Originals` directory, and no LightCraft `catalog.log` or `
 the Photos session. Render and decoded-source caches are in memory.
 
 Use **Download original** on an individual grid photo, or on the selected photo in the sidebar,
-to retrieve just that original from iCloud. The background task shows **Downloading…** and
+to load just that original from Photos, using iCloud if needed. The background task shows **Downloading…** and
 **Retry download** on failure. Network access is enabled only for this explicit request; browsing,
-editing, recipe reads and exports never enable downloads automatically. A missing cloud original
-explains this per-photo action instead of reporting opaque PhotoKit error 3164. Downloaded pixels
+editing and exports never enable original retrieval automatically. Recipe reads also keep network
+access disabled. This policy is enforced before the Rust helper call and before native PhotoKit
+resource access, beyond PhotoKit's [network access option](https://developer.apple.com/documentation/photos/phassetresourcerequestoptions/isnetworkaccessallowed),
+which alone does not prohibit reading a local resource. Downloaded pixels
 are cached in memory at full, preview and thumbnail sizes. Photos manages its own local/iCloud
-cache; if an original is later evicted, another explicit download may be needed. Exports never
+cache; if decoded pixels are later evicted from LightCraft memory, another explicit load may be needed. Exports never
 silently substitute a lower-resolution image. **Import Photos…** and dropped image files create
 assets directly in Photos and retain the input files. File imports are limited to 200 per call;
 use Photos for importing folders and managing albums, names, deletions and original metadata.

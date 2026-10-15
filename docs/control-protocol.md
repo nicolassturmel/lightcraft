@@ -193,3 +193,11 @@ press/release/motion, scroll, key press/release, text, paste, focus and held-ges
 The Web frame request uses a separate binary reply channel, not JSON pixel payloads. The
 existing JSON-lines screenshot/render and MCP methods keep their behavior. Details and launch
 instructions are in [web.md](web.md#desktop-view).
+
+### Photos refresh diagnostics (2026-10-15)
+
+`ui.inspect.applePhotos.refresh` reports `started` (native snapshot requests this launch),
+`requested`, `waitingForGesture`, and `lastCompletedAt` (application time). A stable focused
+session and Web canvas focus never initiate periodic scans. Unchanged responses preserve the
+catalogue revision and caches. Original retrieval requires `photo.downloadApplePhotosOriginal`;
+selection/render/mask/auto-adjustment/export requests cannot read even a local uncached original.

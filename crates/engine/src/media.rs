@@ -610,6 +610,13 @@ impl MediaCache {
         if cached && let Some(a) = self.get_source(p.id, level) {
             return SourceRef::Loaded(Box::new(a));
         }
+        if cached
+            && level != SourceLevel::Full
+            && matches!(p.source, Source::ApplePhotos { .. })
+            && let Some(original) = self.get_source(p.id, SourceLevel::Full)
+        {
+            return SourceRef::Loaded(Box::new(original));
+        }
         // Procedural scenes have a nominal size: "full" is that size, not unbounded.
         let max_edge = level.max_edge().min(match (&p.source, level) {
             (Source::Demo { .. }, SourceLevel::Full) => p.width.max(p.height).max(1) as usize,
@@ -648,8 +655,8 @@ impl MediaCache {
                     None => SourceRef::File { path: format!("demo:{scene}"), max_edge, loader: None, fallback: None, denoise: None },
                 }
             }
-            // Browsing, editing and exports never initiate an iCloud download. Only the explicit
-            // per-photo download command creates a source with network access.
+            // This uncached ref is blocked before calling PhotoKit, even for a local original.
+            // Only the explicit per-photo download command authorizes resource retrieval.
             Source::ApplePhotos { asset, .. } => SourceRef::ApplePhotos { asset: asset.clone(), max_edge, network: false },
             Source::File { path } => {
                 SourceRef::File { path: path.clone(), max_edge, loader: self.file_loader.clone(), fallback: None, denoise: None }

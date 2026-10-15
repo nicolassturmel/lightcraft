@@ -144,6 +144,7 @@ pub fn inspect(app: &LightcraftApp, ctx: &egui::Context) -> Value {
         "tasks": app.tasks.labels(),
         "applePhotos": {"primary":app.session.apple_library.is_some(), "open":app.apple_photos.open,
             "loaded":app.session.apple_library.as_ref().is_some_and(|l| l.loaded), "error":app.apple_photos.error,
+            "refresh":app.apple_photos.refresh_status(),
             "network":false, "downloadErrors":app.apple_photos.download_errors, "lastCopy":app.apple_photos.last_copy},
         "browserConnections": app.browser_connections.iter().map(|r| json!({"peer":r.peer,"code":r.code})).collect::<Vec<_>>(),
         // every long-running task in flight, as the activity stack shows them (`activity.list`)
