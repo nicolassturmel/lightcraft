@@ -733,6 +733,79 @@ func semanticSkyMask(_ request: Request) throws -> [String: Any] {
     return ["side": side, "provider": "Apple Vision / Core ML", "model": "DETR-ResNet50-F16P8", "category": "sky"]
 }
 
+func perform(_ request: Request) async throws -> [String: Any] {
+    let result: [String: Any]
+    switch request.operation {
+    case "health":
+        result = ["protocol": 2, "photos": authorizationName(PHPhotoLibrary.authorizationStatus(for: .readWrite)),
+            "raw": ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 12, minorVersion: 0, patchVersion: 0)),
+            "vision": ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 14, minorVersion: 0, patchVersion: 0)),
+            "sky": ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 14, minorVersion: 0, patchVersion: 0))
+                && FileManager.default.fileExists(atPath: skyModelURL(request).path),
+            "skyProvider": "Apple Vision / Core ML"]
+    case "photos-import": result = try await importPhotos(request)
+    case "photos-snapshot": result = try await snapshotPhotos(request)
+    case "photos-preview": result = try await previewPhotos(request)
+    case "photos-decode":
+        guard #available(macOS 12.0, *) else { throw BridgeError("Photos image decoding requires macOS 12 or later") }
+        result = try await decodePhotos(request)
+    case "photos-save-copy": result = try await savePhotosCopy(request)
+    case "photos-recipe": result = try await photosRecipe(request)
+    case "raw-probe", "raw-decode":
+        guard #available(macOS 12.0, *) else { throw BridgeError("Apple RAW requires macOS 12 or later") }
+        result = try autoreleasepool { try raw(request) }
+    case "vision-mask":
+        guard #available(macOS 14.0, *) else { throw BridgeError("Apple Vision foreground masks require macOS 14 or later") }
+        result = try autoreleasepool { try foregroundMask(request) }
+    case "vision-sky-mask":
+        guard #available(macOS 14.0, *) else { throw BridgeError("Apple semantic sky masks require macOS 14 or later") }
+        result = try autoreleasepool { try semanticSkyMask(request) }
+    default: throw BridgeError("Unknown Apple bridge operation")
+    }
+    return result
+}
+
+// One sequential system-service worker per host. Domain errors leave it alive for the next photo.
+func readBridgeLine(_ limit: Int) throws -> Data? {
+    var line = Data()
+    while line.count <= limit {
+        let byte = FileHandle.standardInput.readData(ofLength: 1)
+        if byte.isEmpty {
+            if line.isEmpty { return nil }
+            throw BridgeError("Truncated Apple service command")
+        }
+        if byte.first == 10 { return line }
+        line.append(byte)
+    }
+    throw BridgeError("Oversized Apple service command")
+}
+
+func serviceError(_ error: Error) -> [String: Any] {
+    let native = error as NSError
+    return ["error": native.localizedDescription, "errorDomain": native.domain, "errorCode": native.code]
+}
+
+func serveBridge() async throws {
+    while let line = try readBridgeLine(2048) {
+        guard let envelope = try JSONSerialization.jsonObject(with: line) as? [String: Any],
+              let id = envelope["id"] as? UInt64, let input = envelope["input"] as? String else {
+            throw BridgeError("Invalid Apple service command")
+        }
+        let result: [String: Any]
+        do {
+            let file = try FileHandle(forReadingFrom: URL(fileURLWithPath: input))
+            defer { try? file.close() }
+            let data = file.readData(ofLength: 65_537)
+            guard data.count <= 65_536 else { throw BridgeError("Oversized bridge request") }
+            result = try await perform(JSONDecoder().decode(Request.self, from: data))
+        } catch { result = serviceError(error) }
+        let response = try JSONSerialization.data(withJSONObject: ["id": id, "result": result])
+        guard response.count <= 192_000 else { throw BridgeError("Oversized Apple service response") }
+        try FileHandle.standardOutput.write(contentsOf: response + Data("\n".utf8))
+        await Task.yield()
+    }
+}
+
 @main struct AppleBridge {
     static func main() async {
         // A UI being closed must not leave a PhotoKit download or permission waiter orphaned.
@@ -747,37 +820,14 @@ func semanticSkyMask(_ request: Request) throws -> [String: Any] {
                 try await watchPhotos(URL(fileURLWithPath: CommandLine.arguments[2]))
                 return
             }
+            if CommandLine.arguments.count == 2, CommandLine.arguments[1] == "--serve" {
+                try await serveBridge()
+                return
+            }
             let input = FileHandle.standardInput.readData(ofLength: 65_537)
             guard input.count <= 65_536 else { throw BridgeError("Oversized bridge request") }
             let request = try JSONDecoder().decode(Request.self, from: input)
-            let result: [String: Any]
-            switch request.operation {
-            case "health":
-                result = ["protocol": 2, "photos": authorizationName(PHPhotoLibrary.authorizationStatus(for: .readWrite)),
-                    "raw": ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 12, minorVersion: 0, patchVersion: 0)),
-                    "vision": ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 14, minorVersion: 0, patchVersion: 0)),
-                    "sky": ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 14, minorVersion: 0, patchVersion: 0))
-                        && FileManager.default.fileExists(atPath: skyModelURL(request).path),
-                    "skyProvider": "Apple Vision / Core ML"]
-            case "photos-import": result = try await importPhotos(request)
-            case "photos-snapshot": result = try await snapshotPhotos(request)
-            case "photos-preview": result = try await previewPhotos(request)
-            case "photos-decode":
-                guard #available(macOS 12.0, *) else { throw BridgeError("Photos image decoding requires macOS 12 or later") }
-                result = try await decodePhotos(request)
-            case "photos-save-copy": result = try await savePhotosCopy(request)
-            case "photos-recipe": result = try await photosRecipe(request)
-            case "raw-probe", "raw-decode":
-                guard #available(macOS 12.0, *) else { throw BridgeError("Apple RAW requires macOS 12 or later") }
-                result = try raw(request)
-            case "vision-mask":
-                guard #available(macOS 14.0, *) else { throw BridgeError("Apple Vision foreground masks require macOS 14 or later") }
-                result = try foregroundMask(request)
-            case "vision-sky-mask":
-                guard #available(macOS 14.0, *) else { throw BridgeError("Apple semantic sky masks require macOS 14 or later") }
-                result = try semanticSkyMask(request)
-            default: throw BridgeError("Unknown Apple bridge operation")
-            }
+            let result = try await perform(request)
             let response = try JSONSerialization.data(withJSONObject: result)
             guard response.count <= 192_000 else { throw BridgeError("Photos page is too large; request fewer photos") }
             try FileHandle.standardOutput.write(contentsOf: response)

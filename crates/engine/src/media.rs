@@ -243,6 +243,11 @@ pub enum SourceRef {
         max_edge: usize,
         network: bool,
     },
+    /// Lossless local backing of a Photos original explicitly downloaded earlier.
+    PhotosCached {
+        original: crate::apple::CachedOriginal,
+        max_edge: usize,
+    },
     /// A smart preview standing in for a missing original.
     Smart {
         path: std::path::PathBuf,
@@ -258,6 +263,7 @@ impl SourceRef {
         let image = match self {
             SourceRef::Loaded(a) => return Ok((**a).clone()),
             SourceRef::ApplePhotos { asset, max_edge, network } => return crate::apple::decode_photo(asset, *max_edge, *network),
+            SourceRef::PhotosCached { original, max_edge } => return original.load(*max_edge),
             SourceRef::Demo { scene, max_edge } => crate::demo::scene_pixels(scene, *max_edge)?,
             SourceRef::File { path, max_edge, loader, fallback, denoise } => {
                 let plain = || match loader {
@@ -336,6 +342,10 @@ pub struct MediaCache {
     scenes: Vec<lightcraft_scenes::Scene>,
     /// Rendered thumbnails (memory, plus disk once a library is attached).
     pub rendered: Arc<PreviewCache>,
+    /// Single-flight browsing reads. Their pixels live in a separate namespace of `rendered`.
+    photos_preview_gate: Arc<std::sync::Mutex<PhotosPreviewGate>>,
+    photos_preview_epoch: Arc<std::sync::atomic::AtomicU64>,
+    pub photos_originals: Option<Arc<crate::apple::OriginalCache>>,
     /// Which photos have a cached denoised picture, and how to read it.
     pub denoise: DenoiseIndex,
 }
@@ -404,6 +414,9 @@ impl Default for MediaCache {
             availability: Default::default(),
             scenes: Vec::new(),
             rendered: Arc::new(PreviewCache::memory(rendered_budget(budget))),
+            photos_preview_gate: Default::default(),
+            photos_preview_epoch: Default::default(),
+            photos_originals: None,
             denoise: DenoiseIndex::default(),
         }
     }
@@ -415,6 +428,10 @@ fn rendered_budget(share: usize) -> usize {
 }
 
 impl MediaCache {
+    /// Explicit retry of unavailable Photos previews, preserving all successfully cached pixels.
+    pub fn retry_photos_previews(&mut self) {
+        self.photos_preview_epoch.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     /// Keep rendered thumbnails on disk in `dir` as well. The cache this replaces is retired
     /// (its files stay): render jobs still holding it can't write through it any more, even
     /// into a directory a later clear emptied (`dir` may be the same one).
@@ -569,6 +586,11 @@ impl MediaCache {
         }
     }
 
+    /// Availability from the background-built index; no file or PhotoKit read on the UI thread.
+    pub fn has_photos_original(&self, photo: &Photo) -> bool {
+        self.has_source(photo.id, SourceLevel::Full) || self.photos_originals.as_ref().is_some_and(|cache| cache.get(&photo.source).is_some())
+    }
+
     /// Decoded sources held: (thumbnail level, preview level, full size).
     pub fn usage(&self) -> (crate::memory::Usage, crate::memory::Usage, crate::memory::Usage) {
         use crate::memory::Usage;
@@ -657,7 +679,10 @@ impl MediaCache {
             }
             // This uncached ref is blocked before calling PhotoKit, even for a local original.
             // Only the explicit per-photo download command authorizes resource retrieval.
-            Source::ApplePhotos { asset, .. } => SourceRef::ApplePhotos { asset: asset.clone(), max_edge, network: false },
+            Source::ApplePhotos { asset, .. } => match self.photos_originals.as_ref().and_then(|cache| cache.get(origin)) {
+                Some(original) => SourceRef::PhotosCached { original, max_edge },
+                None => SourceRef::ApplePhotos { asset: asset.clone(), max_edge, network: false },
+            },
             Source::File { path } => {
                 SourceRef::File { path: path.clone(), max_edge, loader: self.file_loader.clone(), fallback: None, denoise: None }
             }
@@ -890,9 +915,74 @@ pub enum QuickSource {
     Small,
 }
 
-/// Something to show *now* for a photo while its real render is prepared. Tried in order: cached
-/// renders, the embedded preview of an unedited raw, a thumbnail-level render.
+#[derive(Default)]
+struct PhotosPreviewGate {
+    errors: std::collections::HashMap<(Hash128, u64, u64), String>,
+}
+
+/// Source/revision browsing cache shared by sizes, with bounded single-flight failure caching.
 #[derive(Clone)]
+pub struct PhotosPreview {
+    pub asset: String,
+    pub edge: usize,
+    pub(crate) cache: Arc<PreviewCache>,
+    pub(crate) cache_key: Hash128,
+    pub(crate) generation: u64,
+    gate: Arc<std::sync::Mutex<PhotosPreviewGate>>,
+    epoch: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl PhotosPreview {
+    fn load(&self) -> Result<Rgba8, String> {
+        let cached = || self.cache.get_at(self.generation, self.cache_key);
+        let image = if let Some(image) = cached() {
+            image
+        } else {
+            let mut guard = self.gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(image) = cached() {
+                image
+            } else {
+                if self.cache.generation() != self.generation {
+                    return Err("Photos preview cache was cleared".into());
+                }
+                // One source-sized read shared by grid, filmstrip and all thumbnail sizes/edits.
+                let failure_key = (self.cache_key, self.generation, self.epoch.load(std::sync::atomic::Ordering::Relaxed));
+                if let Some(error) = guard.errors.get(&failure_key) {
+                    return Err(error.clone());
+                }
+                let image = match crate::apple::preview_photo(&self.asset, 512) {
+                    Ok(image) => Arc::new(image),
+                    Err(error) => {
+                        if guard.errors.len() >= 128
+                            && let Some(key) = guard.errors.keys().next().copied()
+                        {
+                            guard.errors.remove(&key);
+                        }
+                        guard.errors.insert(failure_key, error.chars().take(2048).collect());
+                        return Err(error);
+                    }
+                };
+                self.cache.put_at(self.generation, self.cache_key, image.clone());
+                image
+            }
+        };
+        if image.width.max(image.height) <= self.edge {
+            return Ok(Arc::unwrap_or_clone(image));
+        }
+        // Display-only resampling; these gamma-encoded pixels never feed develop or export.
+        let input =
+            lightcraft_raster::Image { width: image.width, height: image.height, data: image.data.iter().map(|p| p.map(f32::from)).collect() };
+        let small = lightcraft_raster::resample::fit(&input, self.edge, self.edge, lightcraft_raster::resample::Filter::Bilinear);
+        Ok(Rgba8 {
+            width: small.width,
+            height: small.height,
+            data: small.data.into_iter().map(|p| p.map(|v| v.round().clamp(0.0, 255.0) as u8)).collect(),
+        })
+    }
+}
+
+#[derive(Clone)]
+/// Something to show now: a cached render, embedded preview, library preview or small render.
 pub struct QuickJob {
     pub request_id: u64,
     pub photo: PhotoId,
@@ -901,8 +991,8 @@ pub struct QuickJob {
     pub cached: Vec<(Arc<PreviewCache>, Hash128)>,
     /// Embedded preview of an unedited raw: (path, loader, max edge).
     pub embedded: Option<(String, PreviewLoader, usize)>,
-    /// Apple Photos' cached library preview (asset, max edge). Always offline.
-    pub photos_preview: Option<(String, usize)>,
+    /// Apple Photos' cached library preview. Its source/revision cache never contains edits.
+    pub photos_preview: Option<PhotosPreview>,
     /// Last resort: run this thumbnail job.
     pub small: Option<Box<RenderJob>>,
 }
@@ -936,8 +1026,8 @@ impl QuickJob {
         {
             return done(rendered(image), Some(QuickSource::Embedded));
         }
-        if let Some((asset, edge)) = &self.photos_preview {
-            return done(crate::apple::preview_photo(asset, *edge).and_then(rendered), Some(QuickSource::PhotosPreview));
+        if let Some(preview) = &self.photos_preview {
+            return done(preview.load().and_then(rendered), Some(QuickSource::PhotosPreview));
         }
         if let Some(job) = self.small {
             let r = job.run();
@@ -1265,13 +1355,26 @@ impl crate::Session {
     /// decode job follows it and its pixels can never enter the decoded-original cache.
     pub fn photos_grid_preview_job(&self, job: &RenderJob) -> Option<QuickJob> {
         let Source::ApplePhotos { asset, .. } = &job.origin else { return None };
+        if matches!(job.source, SourceRef::Loaded(_)) {
+            return None;
+        }
+        let cache = self.media.rendered.clone();
+        let cache_key = Hasher128::new().str("Photos browsing pixels v1").str(&content_key(self.catalog.photo(job.photo)?)).u64(512).finish();
         Some(QuickJob {
             request_id: 0,
             photo: job.photo,
-            key: job.key ^ 0x7fb4_85c2_142d_e5a9 ^ self.catalog.revision.rotate_left(13),
+            key: job.key ^ 0x7fb4_85c2_142d_e5a9,
             cached: job.cache.clone().into_iter().collect(),
             embedded: None,
-            photos_preview: Some((asset.clone(), job.request.max_w.max(job.request.max_h).clamp(1, 512))),
+            photos_preview: Some(PhotosPreview {
+                asset: asset.clone(),
+                edge: job.request.max_w.max(job.request.max_h).clamp(1, 512),
+                generation: cache.generation(),
+                cache,
+                cache_key,
+                gate: self.media.photos_preview_gate.clone(),
+                epoch: self.media.photos_preview_epoch.clone(),
+            }),
             small: None,
         })
     }

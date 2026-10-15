@@ -98,7 +98,29 @@ The grid and filmstrip show locally cached, rendered **Photos previews** via
 `PHImageManager.requestImage`, with network access disabled. Browsing does not retrieve RAW
 resources. These thumbnails never become development or export sources, so they cannot replace
 original pixels or apply baked Photos adjustments twice. A cached LightCraft render is preferred
-when available. After downloading an original, the grid can render the current LightCraft edits.
+when available. After downloading an original, the grid renders the current LightCraft edits
+from the genuine cached original, even when its separate thumbnail-level source was evicted.
+
+One persistent **system-service helper** serializes Photos previews, RAW decoding and Vision,
+with one additional process for the PhotoKit observer. Browsing no longer spawns a process for
+each image. Bounded requests/replies and per-call timeouts terminate and reap a failed helper;
+operations are never replayed automatically. Normal image/permission errors keep a healthy
+service alive. **Refresh Photos** explicitly reconnects a failed service; closing the app stops
+both helpers. `ui.inspect.applePhotos.services` reports the PID, process starts and request count.
+
+Locally rendered browsing pixels have a bounded memory cache keyed only by the asset identifier,
+Photos source revision and a canonical 512-pixel size. Grid/filmstrip sizes reuse and resample
+those pixels. Settings, slider changes and changes to other photos never invalidate that source
+cache or trigger another PhotoKit read. Concurrent misses are coalesced. Unavailable previews also
+have a bounded failure cache, so
+retouches never retry every cloud-only image. Refresh Photos explicitly retries failures without
+clearing successful pixels. These pixels remain browsing-only; the decoded original and edit-render caches are separate. Edits rebuild previews
+from the cached original without reading Photos again. A genuine source-revision change misses
+only that photo's cache; explicit Clear Previews changes its generation, so old jobs cannot
+repopulate it. Cache entries may be evicted under the memory budget and do not survive app exit.
+Queued thumbnails outside every panel's visible/prefetch range are dropped at the end of each
+layout pass, including when scrolling or hiding the filmstrip; current reads are limited by the
+render workers and the single native service.
 
 Originals are retrieved through `PHAssetResourceManager` **only after the per-photo Download
 original action**, including when the original is already local. Selection, neighbour prefetch,
@@ -108,8 +130,9 @@ remain in the library. RAW+JPEG pairs prefer the
 RAW original, including `alternatePhoto`; rendered assets use their current Photos rendition.
 The public PhotoKit resource API requires a short-lived decode file. Its enclosing temporary
 directory is removed after decoding, errors or bridge timeouts. There is no permanent import of
-Photos originals, no `Originals` directory, and no LightCraft `catalog.log` or `catalog.snap` for
-the Photos session. Render and decoded-source caches are in memory.
+Photos source files and no LightCraft `catalog.log` or `catalog.snap` for the Photos session.
+Rendered previews and active decoded sources have memory caches. Explicitly downloaded originals
+also have lossless local pixel backing, described below.
 
 Use **Download original** on an individual grid photo, or on the selected photo in the sidebar,
 to load just that original from Photos, using iCloud if needed. The background task shows **Downloading…** and
@@ -117,10 +140,15 @@ to load just that original from Photos, using iCloud if needed. The background t
 editing and exports never enable original retrieval automatically. Recipe reads also keep network
 access disabled. This policy is enforced before the Rust helper call and before native PhotoKit
 resource access, beyond PhotoKit's [network access option](https://developer.apple.com/documentation/photos/phassetresourcerequestoptions/isnetworkaccessallowed),
-which alone does not prohibit reading a local resource. Downloaded pixels
-are cached in memory at full, preview and thumbnail sizes. Photos manages its own local/iCloud
-cache; if decoded pixels are later evicted from LightCraft memory, another explicit load may be needed. Exports never
-silently substitute a lower-resolution image. **Import Photos…** and dropped image files create
+which alone does not prohibit reading a local resource. Downloaded pixels are cached in memory
+at full, preview and thumbnail sizes. Their unedited linear Rec.2020 f32 pixels and Apple decoder
+facts are also written atomically under `Photos Adjustments/Original Cache/`, keyed by asset and
+source revision. This separate, recreatable cache has an 8 GiB budget and evicts older entries.
+Its header-only index loads on the library worker; UI availability checks perform no disk I/O.
+An export of an original evicted from RAM, or after restarting the app, reads this lossless local
+backing without PhotoKit, RAW decoding or network access. Editing never rewrites it. A changed
+source revision cannot reuse old pixels; an uncached original still needs the per-photo button.
+Exports never silently substitute a lower-resolution image. **Import Photos…** and dropped image files create
 assets directly in Photos and retain the input files. File imports are limited to 200 per call;
 use Photos for importing folders and managing albums, names, deletions and original metadata.
 Those file-catalogue operations are disabled in LightCraft’s Photos mode.
@@ -237,10 +265,15 @@ remove temporary decode files.
 
 Regression tests cover native asset identity, nested albums, additions/removals, atomic refresh,
 metadata recovery after restart, failed-save retries, ownership guards, per-photo download
-isolation, stale-download rejection, library-preview/original separation and the full-size copy
-render/recipe without requesting access to a personal photothèque. A SHA-256-pinned public CC0
+isolation, stale-download rejection, library-preview/original separation, full-size export after
+RAM eviction/restart, exact cached float/decoder-fact recovery, truncated/failed cache writes and
+the full-size copy render/recipe without requesting access to a personal photothèque. A SHA-256-pinned public CC0
 Canon R8 C-RAW verifies native 6000×4000 decoding and preview colour conversion. UI snapshots
 verify the Photos controls in the normal sidebar and download buttons on separate grid photos.
+A native 500-photo synthetic run also checks one shared service PID across 190 requests, zero new
+Photos reads through slider/mask/undo/redo changes, cancelled filmstrip work (peak queue 16),
+metadata-only events with no pixel reads, and only one reread for a changed source. Downloading
+another original and restarting retain byte-identical exported PNGs without another original read.
 Mask regressions verify that Object/Add/Subtract/Intersect never open a SAM dialog, text selection
 stays disabled, and stale object results cannot write adjustments. The CC0 R8 fixture also checks
 real Vision inference, click/mask orientation, exclusion of the sole selected instance, and

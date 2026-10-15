@@ -4,7 +4,7 @@
 #[path = "grid_header_tests.rs"]
 mod header_tests;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
@@ -236,7 +236,6 @@ fn show_inner(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     } else {
         None
     };
-    let mut visible_ids = HashSet::new();
     let mut visited = 0u64;
     egui::ScrollArea::vertical().id_salt("grid-scroll").auto_shrink([false, false]).show_viewport(ui, |ui, viewport| {
         let (area, _) = ui.allocate_exact_size(vec2(ui.available_width(), total_h), Sense::hover());
@@ -254,7 +253,6 @@ fn show_inner(app: &mut LightcraftApp, ui: &mut egui::Ui) {
                 if !rect.intersects(prefetch) {
                     continue;
                 }
-                visible_ids.insert(id);
                 let r = rect.translate(origin.to_vec2());
                 let onscreen = rect.intersects(viewport);
                 cell(app, ui, id, r, square, onscreen, ppp);
@@ -288,7 +286,6 @@ fn show_inner(app: &mut LightcraftApp, ui: &mut egui::Ui) {
         }
     });
     app.caches.grid_stats.cells_visited += visited;
-    app.renderer.evict_thumbs(&visible_ids, 600);
     let _ = (Color32::BLACK, StrokeKind::Inside, Stroke::NONE);
 }
 
@@ -449,6 +446,7 @@ fn group_header(app: &mut LightcraftApp, ui: &mut egui::Ui, run: &DateRun, ids: 
 /// first gets a stand-in (its cached thumbnail, else its embedded camera preview), and its real
 /// render then follows in the background.
 pub fn request_thumb(app: &mut LightcraftApp, id: PhotoId, size: usize, priority: u32) {
+    app.renderer.want_thumbnail(id);
     let bucket = lightcraft_engine::media::thumb_bucket(size);
     if let Some(photo) = app.session.catalog.photo(id)
         && app.renderer.thumb_current(photo, bucket, priority)

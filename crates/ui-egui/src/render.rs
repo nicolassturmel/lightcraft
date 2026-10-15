@@ -174,6 +174,8 @@ pub struct Renderer {
     /// Last thumbnail inputs; weak identities do not retain photo histories or force deep clones.
     /// (photo, size bucket, job key, whether the request went through an embedded stand-in)
     thumb_inputs: HashMap<PhotoId, (std::sync::Weak<lightcraft_catalog::Photo>, usize, u64, bool)>,
+    /// Thumbnail interest across all panels in this layout pass (grid, filmstrip, second view).
+    wanted_thumbs: std::collections::HashSet<PhotoId>,
     pool: JobPool<Slot, RenderResult>,
     /// Jobs run elsewhere (see [`RenderOffload`]); `queue` holds the ones not started yet.
     offload: Option<Box<dyn RenderOffload>>,
@@ -251,6 +253,7 @@ impl Renderer {
             preview_generation: None,
             pool: JobPool::new(threads),
             thumb_inputs: HashMap::new(),
+            wanted_thumbs: Default::default(),
             offload: None,
             queue: Vec::new(),
             seq: 0,
@@ -278,6 +281,32 @@ impl Renderer {
 }
 
 impl Renderer {
+    pub fn begin_thumbnails(&mut self) {
+        self.wanted_thumbs.clear();
+    }
+
+    pub fn retry_failed_thumbnails(&mut self) {
+        let failed: std::collections::HashSet<_> = self
+            .failed
+            .keys()
+            .filter_map(|s| match s {
+                Slot::Thumb(id) | Slot::ThumbQuick(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        self.failed.retain(|s, _| !matches!(s, Slot::Thumb(_) | Slot::ThumbQuick(_)));
+        self.thumb_inputs.retain(|id, _| !failed.contains(id));
+    }
+
+    pub fn want_thumbnail(&mut self, id: PhotoId) {
+        self.wanted_thumbs.insert(id);
+    }
+
+    pub fn end_thumbnails(&mut self) {
+        let keep = std::mem::take(&mut self.wanted_thumbs);
+        self.evict_thumbs(&keep, 600);
+        self.wanted_thumbs = keep;
+    }
     /// Would asking for this thumbnail again (at `priority`) change nothing?
     pub fn thumb_current(&self, photo: &Arc<lightcraft_catalog::Photo>, bucket: usize, priority: u32) -> bool {
         let Some(&(ref old, size, key, quick)) = self.thumb_inputs.get(&photo.id) else { return false };
@@ -624,7 +653,9 @@ impl Renderer {
             self.forget_all();
         }
         self.preview_generation = Some((Arc::downgrade(cache), generation));
-        self.catalog_rev = session.catalog.revision;
+        // Photos source revisions are already in each job's key. An unrelated edit must not
+        // retry every unavailable/cloud-only browsing thumbnail in the library.
+        self.catalog_rev = if session.apple_library.is_some() { 0 } else { session.catalog.revision };
         self.frame += 1;
         self.trim_stages();
         // wasm: run one job per frame on this thread, timed with the host clock
@@ -839,9 +870,10 @@ impl Renderer {
         let request_ids = &mut self.request_ids;
         let pending = &mut self.pending;
         self.queue.retain(|q| match q.slot {
-            Slot::Thumb(id) if !keep.contains(&id) && q.priority <= 10 => {
+            Slot::Thumb(id) | Slot::ThumbQuick(id) if !keep.contains(&id) && q.priority <= 11 => {
                 pending.remove(&q.slot);
                 request_ids.remove(&q.slot);
+                self.quick_tried.remove(&q.slot);
                 false
             }
             _ => true,
@@ -871,6 +903,32 @@ mod thumbnail_tests {
     }
     fn photo() -> Arc<Photo> {
         Arc::new(Photo::new(PhotoId(1), Source::File { path: "audit.jpg".into() }, "audit.jpg", "JPEG", 6000, 4000, "2026-01-01"))
+    }
+
+    #[test]
+    fn filmstrip_navigation_and_hiding_it_cancel_obsolete_thumbnail_work() {
+        let mut session = Session::new();
+        for n in 1..=600 {
+            let p = Photo::new(PhotoId(n), Source::Demo { scene: 0 }, &format!("photo-{n:04}.jpg"), "JPEG", 8, 6, "2026-01-01");
+            session.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+        }
+        session.selection = lightcraft_engine::Selection::single(PhotoId(1));
+        let mut app = crate::LightcraftApp::new(session, crate::Services::default());
+        app.renderer.set_offload(Box::new(Blocked));
+        app.ui.settings.gpu = false;
+        app.ui.view = crate::state::ViewMode::Detail;
+        app.ui.filmstrip = true;
+        let mut host = crate::headless::Headless::new(app, [1200.0, 800.0], 1.0);
+        for id in [1, 80, 160, 240, 320, 400, 480, 560, 600] {
+            host.app.session.selection = lightcraft_engine::Selection::single(PhotoId(id));
+            for _ in 0..3 {
+                host.step();
+            }
+            assert!(host.app.renderer.queued() < 40, "work for old filmstrip positions must leave the queue: {}", host.app.renderer.queued());
+        }
+        host.app.ui.filmstrip = false;
+        host.step();
+        assert!(!host.app.renderer.pending.keys().any(|s| matches!(s, Slot::Thumb(_) | Slot::ThumbQuick(_))));
     }
     #[test]
     fn snapshot_tracks_cow_edits_undo_reload_and_replacement() {

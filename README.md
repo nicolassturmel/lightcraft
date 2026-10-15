@@ -24,6 +24,9 @@ Photos originals load only through each photo’s **Download original** button, 
 ones. Selection and neighbour prefetch never retrieve them. One initial metadata read starts a persistent PhotoKit change subscription. Only affected photos
 and albums update afterwards; changing focus never rereads the library. Refresh Photos explicitly
 reconnects the subscription.
+One shared Apple worker handles previews, RAW and Vision requests. Browsing pixels are cached
+by photo/revision, independently of edit settings; retouches reuse the decoded original. Explicit
+downloads also keep lossless local pixel backing, so full-size exports survive RAM eviction and restart.
 Selecting another preset replaces the previous look; its reversible parameter description is
 saved alongside the edits. Preview and export always render from the original pixels.
 

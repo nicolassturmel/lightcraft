@@ -206,3 +206,12 @@ asset removal clears the transient undo/redo stacks. Errors stop the subscriptio
 and retain the library; `library.applePhotos` explicitly reconnects. Original retrieval still
 requires `photo.downloadApplePhotosOriginal`; selecting a photo, native masks and exports cannot
 implicitly copy a local or cloud original.
+
+### Apple service diagnostics (2026-10-15)
+
+`ui.inspect.applePhotos.services` reports `state` (`idle`, `ready`, `busy`, `stopped`, `closed`),
+`pid`, `starts` and `requests`. One shared sequential worker handles preview/RAW/Vision requests;
+the separate PhotoKit change observer is counted by `refresh`. Application-level image errors
+do not restart the worker. Transport failures/timeouts stop it without replaying a request;
+`library.applePhotos` reconnects explicitly. Browsing cache keys exclude develop settings and
+catalogue revision. Decoded originals stay in their existing separate cache while edits change.

@@ -9,6 +9,8 @@ use std::{path::Path, time::Duration};
 pub const PHOTOS_ORIGINAL_REQUIRED: &str = "Click Download original for this photo before editing. Selecting a photo never retrieves its original.";
 
 #[cfg(target_os = "macos")]
+mod rpc;
+#[cfg(target_os = "macos")]
 mod watch;
 #[cfg(target_os = "macos")]
 pub use watch::{PhotosEvent, PhotosWatch};
@@ -51,6 +53,25 @@ pub fn invoke(request: &Value, timeout: Duration) -> Result<Value, String> {
         let _ = (request, timeout);
         Err("Apple Photos, RAW and Vision are available only on macOS".into())
     }
+}
+
+/// Stop and reap the shared system-service helper before the host exits.
+pub fn shutdown_services() {
+    #[cfg(target_os = "macos")]
+    rpc::shutdown();
+}
+
+/// Explicit reconnect after a transport failure; healthy helpers and their caches stay alive.
+pub fn reset_services() {
+    #[cfg(target_os = "macos")]
+    rpc::reset();
+}
+
+pub fn services_status() -> Value {
+    #[cfg(target_os = "macos")]
+    return rpc::status();
+    #[cfg(not(target_os = "macos"))]
+    serde_json::json!({"state":"unavailable"})
 }
 
 pub fn decode_raw(path: &Path, max_edge: usize) -> Result<RawImage, String> {
@@ -243,12 +264,9 @@ mod native {
         io::{Read, Write},
         os::unix::fs::PermissionsExt,
         path::PathBuf,
-        process::{Command, Stdio},
-        time::Instant,
     };
 
     const HELPER: &[u8] = include_bytes!(env!("LIGHTCRAFT_APPLE_HELPER"));
-    const MAX_JSON: u64 = 192_000;
 
     pub fn sky_model() -> Result<PathBuf, String> {
         const MODEL: &str = "DETRResnet50SemanticSegmentationF16P8.mlmodelc";
@@ -315,48 +333,7 @@ mod native {
         {
             request["model"] = json!(model);
         }
-        let data = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
-        if data.len() > 65_536 {
-            return Err("oversized Apple bridge request".into());
-        }
-        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
-        let input = dir.path().join("request.json");
-        let output = dir.path().join("response.json");
-        let errors = dir.path().join("stderr.txt");
-        fs::write(&input, data).map_err(|e| e.to_string())?;
-        let mut child = Command::new(helper()?)
-            .stdin(Stdio::from(fs::File::open(input).map_err(|e| e.to_string())?))
-            .stdout(Stdio::from(fs::File::create(&output).map_err(|e| e.to_string())?))
-            .stderr(Stdio::from(fs::File::create(&errors).map_err(|e| e.to_string())?))
-            .spawn()
-            .map_err(|e| format!("starting Apple bridge: {e}"))?;
-        let started = Instant::now();
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) if started.elapsed() < timeout => std::thread::sleep(Duration::from_millis(20)),
-                result => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(match result {
-                        Err(e) => format!("waiting for Apple bridge: {e}"),
-                        _ => "Apple operation timed out; retry after checking Photos permissions or iCloud availability".into(),
-                    });
-                }
-            }
-        };
-        let data = bounded_read(&output, MAX_JSON)?;
-        let response: Value = serde_json::from_slice(&data).map_err(|e| {
-            let message = bounded_read(&errors, 16_000).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
-            format!("invalid Apple bridge response ({status}): {e} {message}")
-        })?;
-        if let Some(error) = super::response_error(&response) {
-            return Err(error);
-        }
-        if !status.success() {
-            return Err(format!("Apple bridge exited with {status}"));
-        }
-        Ok(response)
+        super::rpc::invoke(&request, timeout)
     }
 
     pub fn raw_input(bytes: &[u8]) -> Result<tempfile::NamedTempFile, String> {

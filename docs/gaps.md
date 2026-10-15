@@ -1,6 +1,6 @@
 # Gaps: where LightCraft falls short of Lightroom
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (PhotoKit change subscription; scores unchanged) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (shared Apple worker and independent pixel caches; scores unchanged) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 Every known shortfall, one entry each, ranked by user impact (how many Lightroom users hit it, and
 how hard it blocks them), then by effort. **Agents pick work from the top** (the first entry nobody is
@@ -29,7 +29,10 @@ Photos uses one persistent PhotoKit change subscription after its initial read. 
 focus never rereads the library; only changed metadata updates. Untouched records and decoded
 pixels stay cached, and changes wait for active gestures. Errors require explicit reconnect. Original
 resource access is blocked until the per-photo Download original action, even for local originals.
-See [apple-integration.md](apple-integration.md). The portable gaps and scores below remain
+Preview/RAW/Vision calls now share one persistent helper. Browsing pixels are cached independently
+of edits/catalogue revision; decoded originals are reused across retouches and lossless disk backing
+keeps exports available after RAM eviction/restart. Offscreen filmstrip
+work is cancelled. See [apple-integration.md](apple-integration.md). The portable gaps and scores below remain
 open; no broader camera-coverage claim is made from one Canon R8 test.
 
 ## Ranked
@@ -90,6 +93,8 @@ Beta-blocking gaps (B) total **~230–430 h**; with the stability and platform w
 - 2026-10-05: compressed NEF (#86). The older history is in [ROADMAP.md](../ROADMAP.md#progress-log).
 
 ## Revision history
+
+- 2026-10-15: APPLE.10 replaces per-image helper launches with one serialized persistent Apple worker, separates source/revision browsing cache keys from edits, reuses decoded originals with lossless disk backing for exports after RAM eviction/restart, and cancels offscreen filmstrip work. Scores unchanged.
 
 - 2026-10-15: APPLE.9 replaces native-focus refreshes with one persistent PhotoKit observer and bounded incremental events; unchanged metadata notifications are filtered and unaffected records/edits/caches survive. Scores unchanged.
 

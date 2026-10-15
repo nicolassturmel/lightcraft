@@ -851,6 +851,8 @@ impl LightcraftApp {
     /// on other threads (export, denoise, the device warm-up). `false`: the deadline passed first
     /// (the host exits anyway). The app renders nothing afterwards.
     pub fn shutdown(&mut self, timeout: std::time::Duration) -> bool {
+        self.apple_photos.shutdown();
+        lightcraft_engine::apple::shutdown_services();
         lightcraft_engine::gpu::begin_shutdown();
         #[cfg(not(target_arch = "wasm32"))]
         let t0 = std::time::Instant::now();
@@ -1094,6 +1096,7 @@ impl LightcraftApp {
 
     /// Frame timings once layout is done (`t0`: when layout started).
     fn end_frame(&mut self, ctx: &egui::Context, t0: f64) {
+        self.renderer.end_thumbnails();
         ctx.output(|o| {
             for c in &o.commands {
                 if let egui::OutputCommand::CopyText(text) = c {
@@ -1114,6 +1117,7 @@ impl LightcraftApp {
             ctx.request_repaint();
             return;
         }
+        self.renderer.begin_thumbnails();
         panels::dialogs::prepare(self, ui);
         let t0 = now_ms();
         if std::mem::take(&mut self.ui.quit) {

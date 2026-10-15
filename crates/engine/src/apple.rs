@@ -16,6 +16,25 @@ use std::{
 
 mod changes;
 pub use changes::{PhotosChanges, PhotosUpdate, PhotosWatch};
+mod originals;
+pub use originals::{CachedOriginal, OriginalCache};
+
+pub fn services_status() -> Value {
+    #[cfg(target_os = "macos")]
+    return lightcraft_apple::services_status();
+    #[cfg(not(target_os = "macos"))]
+    json!({"state":"unavailable"})
+}
+
+pub fn reset_services() {
+    #[cfg(target_os = "macos")]
+    lightcraft_apple::reset_services();
+}
+
+pub fn shutdown_services() {
+    #[cfg(target_os = "macos")]
+    lightcraft_apple::shutdown_services();
+}
 
 #[cfg(target_os = "macos")]
 pub use lightcraft_apple::PHOTOS_ORIGINAL_REQUIRED as ORIGINAL_REQUIRED;
@@ -117,12 +136,13 @@ pub struct LoadedLibrary {
     pub snapshot: Snapshot,
     drafts: BTreeMap<String, Draft>,
     pub warnings: Vec<String>,
+    originals: Option<Arc<OriginalCache>>,
 }
 
 impl LoadedLibrary {
     /// A transient metadata response. The native loader also attaches on-disk adjustment drafts.
     pub fn metadata(snapshot: Snapshot) -> Self {
-        Self { snapshot, drafts: BTreeMap::new(), warnings: vec![] }
+        Self { snapshot, drafts: BTreeMap::new(), warnings: vec![], originals: None }
     }
 }
 
@@ -304,7 +324,7 @@ pub fn load_snapshot(directory: Option<&Path>) -> Result<LoadedLibrary, String> 
     {
         let snapshot: Snapshot = serde_json::from_value(lightcraft_apple::photos_snapshot()?).map_err(|e| e.to_string())?;
         let (drafts, warnings) = load_drafts(directory);
-        Ok(LoadedLibrary { snapshot, drafts, warnings })
+        Ok(LoadedLibrary { snapshot, drafts, warnings, originals: directory.map(OriginalCache::scan) })
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -325,6 +345,7 @@ impl Session {
         self.redo.clear();
         self.interaction = None;
         self.media.clear_sources();
+        self.media.photos_originals = None;
         self.media.rendered.retire();
         self.media.rendered = Arc::new(lightcraft_preview::PreviewCache::memory(self.media.budget() / 3));
         self.media.smart_dir = None;
@@ -450,6 +471,9 @@ impl Session {
             self.source = LibrarySource::All;
         }
         let state = self.apple_library.as_mut().ok_or("Apple Photos closed during refresh")?;
+        if self.media.photos_originals.is_none() {
+            self.media.photos_originals = loaded.originals;
+        }
         state.asset_ids = ids;
         state.album_ids = albums;
         state.drafts = drafts;
@@ -619,6 +643,7 @@ pub struct DownloadJob {
     generation: u64,
     origin: Source,
     source: SourceRef,
+    cache: Option<Arc<OriginalCache>>,
 }
 
 pub struct DownloadedOriginal {
@@ -650,12 +675,20 @@ pub fn prepare_download(s: &Session, params: &Value) -> Result<DownloadJob, Stri
         generation: s.library_generation(),
         origin: photo.source.clone(),
         source: SourceRef::ApplePhotos { asset: asset.clone(), max_edge: SourceLevel::Full.max_edge(), network: true },
+        cache: s.media.photos_originals.clone(),
     })
 }
 
 impl DownloadJob {
     pub fn run(&self) -> Result<DownloadedOriginal, String> {
-        self.source.load_source().map(DownloadedOriginal::from_source)
+        let full = match self.cache.as_ref().and_then(|cache| cache.get(&self.origin)) {
+            Some(cached) => cached.load(usize::MAX).or_else(|_| self.source.load_source())?,
+            None => self.source.load_source()?,
+        };
+        if let Some(cache) = &self.cache {
+            cache.store(&self.origin, &full)?;
+        }
+        Ok(DownloadedOriginal::from_source(full))
     }
 }
 
@@ -1013,7 +1046,7 @@ mod tests {
         }))
         .unwrap();
         let (drafts, warnings) = load_drafts(directory);
-        LoadedLibrary { snapshot, drafts, warnings }
+        LoadedLibrary { snapshot, drafts, warnings, originals: directory.map(OriginalCache::scan) }
     }
 
     fn photos_session() -> Session {
@@ -1021,6 +1054,106 @@ mod tests {
         s.apply_photos_snapshot(projected(&["a", "b"], None)).unwrap();
         s.selection = Selection::single(s.apple_library.as_ref().unwrap().asset_ids["a"]);
         s
+    }
+
+    #[test]
+    fn photos_browsing_pixels_are_cached_by_source_across_edits_sizes_and_other_photos() {
+        let mut s = photos_session();
+        let id = s.active().unwrap();
+        let job = s.thumb_job(id, 256).unwrap();
+        let quick = s.photos_grid_preview_job(&job).unwrap();
+        let source = quick.photos_preview.as_ref().unwrap();
+        let source_key = source.cache_key;
+        let image = Arc::new(lightcraft_raster::Rgba8 { width: 8, height: 6, data: vec![[80, 100, 120, 255]; 48] });
+        source.cache.put(source_key, image.clone());
+        assert_eq!(quick.run().rendered.unwrap().image, *image);
+        s.execute("photo.rate", &json!({"ids":[PhotoId(2).0],"rating":3})).unwrap();
+        let untouched = s.thumb_job(id, 256).unwrap();
+        assert_eq!(
+            s.photos_grid_preview_job(&untouched).unwrap().key,
+            job.key ^ 0x7fb4_85c2_142d_e5a9,
+            "unrelated catalogue changes never alter this preview"
+        );
+        for (value, size) in [(0.25, 128), (0.5, 384), (1.0, 512)] {
+            s.execute("develop.set", &json!({"control":"light.exposure","value":value})).unwrap();
+            let job = s.thumb_job(id, size).unwrap();
+            let quick = s.photos_grid_preview_job(&job).unwrap();
+            assert_eq!(quick.photos_preview.as_ref().unwrap().cache_key, source_key);
+            let result = quick.run();
+            assert_eq!(result.quick, Some(crate::media::QuickSource::PhotosPreview));
+            assert_eq!(result.rendered.unwrap().image, *image, "a seeded cache must work without PhotoKit access");
+            assert!(result.loaded.is_none());
+            for level in [SourceLevel::Thumb, SourceLevel::Preview, SourceLevel::Full] {
+                assert!(!s.media.has_source(id, level));
+            }
+        }
+        let old_job = s.thumb_job(id, 256).unwrap();
+        let old = s.photos_grid_preview_job(&old_job).unwrap();
+        let mut changed = projected(&["a"], None).snapshot.assets;
+        changed[0].revision = "r2".into();
+        s.apply_photos_changes(PhotosChanges { assets: changed, ..Default::default() }).unwrap();
+        let changed_job = s.thumb_job(id, 256).unwrap();
+        let new = s.photos_grid_preview_job(&changed_job).unwrap();
+        assert_ne!(new.photos_preview.as_ref().unwrap().cache_key, source_key);
+        old.photos_preview.as_ref().unwrap().cache.clear();
+        assert!(old.run().rendered.err().unwrap().contains("cache was cleared"));
+    }
+
+    #[test]
+    fn repeated_develop_changes_render_from_the_cached_original_without_photokit() {
+        let mut s = photos_session();
+        let id = s.active().unwrap();
+        let original = Arc::new(lightcraft_raster::Rgb32f { width: 8, height: 6, data: vec![[0.1, 0.2, 0.3]; 48] });
+        s.media.insert(id, SourceLevel::Full, original.clone());
+        let mut previous = None;
+        for value in [0.25, 0.5, 0.75, 1.0, 1.25] {
+            s.execute("develop.set", &json!({"control":"light.exposure","value":value})).unwrap();
+            let job = s.thumb_job(id, 128).unwrap();
+            assert!(s.photos_grid_preview_job(&job).is_none(), "genuine decoded pixels must take priority over Photos thumbnails");
+            assert!(matches!(job.source, SourceRef::Loaded(_)));
+            let pixels = job.run().rendered.unwrap().image;
+            assert_ne!(Some(pixels.clone()), previous);
+            previous = Some(pixels);
+            assert!(Arc::ptr_eq(&original, &s.media.get(id, SourceLevel::Full).unwrap()));
+        }
+    }
+
+    #[test]
+    fn exporting_a_downloaded_photo_uses_its_disk_backing_after_ram_eviction_and_restart() {
+        let dir = std::env::temp_dir().join(format!("lc-photos-export-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Session::new().with_apple_photos(Some(dir.clone()));
+        let mut snapshot = projected(&["a", "b"], Some(&dir));
+        snapshot.snapshot.assets[0].width = 3000;
+        snapshot.snapshot.assets[0].height = 2;
+        s.apply_photos_snapshot(snapshot).unwrap();
+        let (a, b) = (PhotoId(1), PhotoId(2));
+        let original_source = s.catalog.photo(a).unwrap().source.clone();
+        let original = DecodedSource::new(
+            Arc::new(lightcraft_raster::Rgb32f { width: 3000, height: 2, data: vec![[0.1, 0.2, 0.3]; 6000] }),
+            Some(lightcraft_pipeline::SourceInfo { raw: true, ..Default::default() }),
+        );
+        s.media.photos_originals.as_ref().unwrap().store(&original_source, &original).unwrap();
+        s.media.insert_source(a, SourceLevel::Full, original.clone());
+        s.media.insert(a, SourceLevel::Preview, Arc::new(lightcraft_raster::Rgb32f { width: 20, height: 1, data: vec![[0.1, 0.2, 0.3]; 20] }));
+        s.media.insert_source(b, SourceLevel::Full, original);
+        assert!(!s.media.has_source(a, SourceLevel::Full), "another photo took the sole full-resolution RAM slot");
+        assert!(s.media.has_photos_original(s.catalog.photo(a).unwrap()));
+        let job = s.export_job(a, 3000, 2, lightcraft_pipeline::OutputSpace::Srgb, lightcraft_pipeline::OutputDepth::U8).unwrap();
+        assert!(matches!(job.source, SourceRef::PhotosCached { .. }), "export must use lossless backing, never the small preview or PhotoKit");
+        let options = crate::export::ExportOptions { format: crate::export::ExportFormat::Png, ..Default::default() };
+        let exported = crate::export::prepare_export(&mut s, a, &options, 1).unwrap().run().unwrap();
+        assert_eq!((exported.width, exported.height), (3000, 2));
+        assert_eq!(s.catalog.photo(a).unwrap().source, original_source);
+        drop(s);
+        let mut reopened = Session::new().with_apple_photos(Some(dir.clone()));
+        let mut snapshot = projected(&["a", "b"], Some(&dir));
+        snapshot.snapshot.assets[0].width = 3000;
+        snapshot.snapshot.assets[0].height = 2;
+        reopened.apply_photos_snapshot(snapshot).unwrap();
+        let again = crate::export::prepare_export(&mut reopened, a, &options, 1).unwrap().run().unwrap();
+        assert_eq!(again.bytes, exported.bytes, "reopening must reconstruct the same full-size PNG without native access");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1135,7 +1268,8 @@ mod tests {
         let job = s.thumb_job(id, 384).unwrap();
         assert!(matches!(&job.source, SourceRef::ApplePhotos { network: false, .. }));
         let preview = s.photos_grid_preview_job(&job).unwrap();
-        assert_eq!(preview.photos_preview, Some(("a".into(), 384)));
+        assert_eq!(preview.photos_preview.as_ref().unwrap().asset, "a");
+        assert_eq!(preview.photos_preview.as_ref().unwrap().edge, 384);
         assert!(preview.small.is_none(), "browsing must not follow the preview with a RAW decode");
         assert!(preview.embedded.is_none());
         let (cache, key) = job.cache.unwrap();

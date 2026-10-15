@@ -32,7 +32,8 @@ impl PhotosWatch {
                     lightcraft_apple::PhotosEvent::Snapshot(value) => {
                         let snapshot = serde_json::from_value(value).map_err(|e| e.to_string())?;
                         let (drafts, warnings) = load_drafts(directory.as_deref());
-                        Ok(PhotosUpdate::Snapshot(LoadedLibrary { snapshot, drafts, warnings }))
+                        let originals = directory.as_deref().map(super::OriginalCache::scan);
+                        Ok(PhotosUpdate::Snapshot(LoadedLibrary { snapshot, drafts, warnings, originals }))
                     }
                     lightcraft_apple::PhotosEvent::Changes(value) => {
                         serde_json::from_value(value).map(PhotosUpdate::Changes).map_err(|e| e.to_string())

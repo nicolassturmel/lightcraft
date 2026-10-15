@@ -23,6 +23,11 @@ pub struct Browser {
 }
 
 impl Browser {
+    pub(crate) fn shutdown(&mut self) {
+        self.watch = None;
+        self.loading = None;
+        self.pending_refresh = None;
+    }
     pub(crate) fn refresh_status(&self) -> Value {
         json!({"started":self.refreshes_started,"requested":self.refresh_requested,
             "waitingForGesture":self.pending_refresh.is_some(),"lastCompletedAt":self.refreshed_at,
@@ -89,6 +94,9 @@ fn start_refresh(app: &mut LightcraftApp) -> Result<Value, String> {
     if app.session.interaction.is_some() {
         return Err("Finish the current adjustment before refreshing Photos".into());
     }
+    lightcraft_engine::apple::reset_services();
+    app.session.media.retry_photos_previews();
+    app.renderer.retry_failed_thumbnails();
     let directory = app.session.apple_library.as_ref().and_then(|l| l.directory.clone());
     let ctx = app.tasks.repaint.clone();
     app.apple_photos.attempted = true;
@@ -229,7 +237,7 @@ fn download_button(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, rect
     }
     let running = app.tasks.is_running(&download_label(id));
     let error = app.apple_photos.download_errors.get(&id).cloned();
-    let ready = error.is_none() && app.session.media.has_source(id, lightcraft_engine::media::SourceLevel::Full);
+    let ready = error.is_none() && app.session.catalog.photo(id).is_some_and(|photo| app.session.media.has_photos_original(photo));
     let label = if running {
         "Downloading…"
     } else if ready {
@@ -368,6 +376,7 @@ pub fn original_needed(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, 
     if !app.session.catalog.photo(id).is_some_and(|p| matches!(p.source, lightcraft_engine::catalog::Source::ApplePhotos { .. }))
         || app.session.media.has_source(id, lightcraft_engine::media::SourceLevel::Preview)
         || app.session.media.has_source(id, lightcraft_engine::media::SourceLevel::Full)
+        || app.session.catalog.photo(id).is_some_and(|photo| app.session.media.has_photos_original(photo))
     {
         return false;
     }
