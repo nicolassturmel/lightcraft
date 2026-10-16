@@ -368,6 +368,7 @@ fn brush_strokes_carry_auto_mask() {
 fn remove_spots_by_pointer_and_keyboard() {
     let mut h = detail("panel.remove");
     assert_eq!(h.app.ui.right, RightPanel::Remove);
+    click(&mut h, "button:removeMode-remove");
     let spots = |h: &Headless| develop(h).spots;
     // paint a spot: it's added with the brush's size/feather/opacity and selected
     let r = h.request("ui.set", json!({"removeFeather": 30.0, "removeOpacity": 80.0}), T);
@@ -1214,8 +1215,10 @@ fn color_range_pick_button_samples_the_photo() {
 }
 
 #[test]
-fn remove_panel_offers_an_explicit_ai_mode_without_creating_a_fake_heal_spot() {
+fn remove_panel_defaults_to_ai_on_mac_when_opened_reopened_or_restored() {
     let mut h = detail("panel.remove");
+    let default_tool = if cfg!(target_os = "macos") { "aiRemove" } else { "remove" };
+    assert_eq!(h.app.ui.tool, default_tool);
     click(&mut h, "button:removeMode-aiRemove");
     assert_eq!(h.app.ui.tool, "aiRemove");
     assert!(develop(&h).spots.is_empty());
@@ -1223,4 +1226,41 @@ fn remove_panel_offers_an_explicit_ai_mode_without_creating_a_fake_heal_spot() {
     click(&mut h, "button:removeMode-heal");
     assert_eq!(h.app.ui.tool, "heal");
     assert!(develop(&h).spots.is_empty());
+    exec(&mut h, "panel.remove", json!({}));
+    exec(&mut h, "panel.remove", json!({}));
+    assert_eq!(h.app.ui.tool, default_tool);
+    let mut saved = h.app.ui.clone();
+    saved.tool = "heal".into();
+    assert_eq!(saved.sanitized().tool, default_tool);
+    assert!(develop(&h).spots.is_empty(), "choosing a default never runs inference");
+}
+
+#[test]
+fn applied_ai_removal_hides_edits_and_hidden_pins_do_not_catch_new_strokes() {
+    let mut h = detail("panel.remove");
+    // A conventional repair supplies geometry without requiring a model in this UI test.
+    click(&mut h, "button:removeMode-heal");
+    brush_at(&mut h, 0.3, 0.6);
+    h.step();
+    assert!(h.app.widgets.iter().any(|(id, _)| id == "spotPin:0"));
+    let photo = h.app.session.active().unwrap();
+    crate::ai_remove::applied(&mut h.app, photo);
+    h.step();
+    assert!(!h.app.ui.remove_edits);
+    assert_eq!(h.app.session.active_spot, None);
+    assert!(!h.app.widgets.iter().any(|(id, _)| id.starts_with("spotPin:") || id.starts_with("spotSource:")));
+
+    // Painting over the hidden pin creates another repair instead of grabbing the old one.
+    brush_at(&mut h, 0.3, 0.6);
+    assert_eq!(develop(&h).spots.len(), 2);
+    crate::ai_remove::applied(&mut h.app, photo);
+    h.step();
+    click(&mut h, "check:removeEdits");
+    assert!(h.app.ui.remove_edits);
+    click(&mut h, "spotPin:0");
+    assert_eq!(h.app.session.active_spot, Some(0));
+    exec(&mut h, "view.removeEdits", json!({"show": false}));
+    assert_eq!(h.app.session.active_spot, None);
+    assert_eq!(develop(&h).spots.len(), 2, "hiding overlays retains the edits");
+    h.settle(SETTLE);
 }

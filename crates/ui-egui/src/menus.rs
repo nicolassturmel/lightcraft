@@ -96,6 +96,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.maskOverlayMode", "Cycle Mask Overlay Mode", None, "View"),
     ("view.maskOverlayColor", "Cycle Mask Overlay Color", None, "View"),
     ("view.maskPins", "Show Mask Pins", None, "View"),
+    ("view.removeEdits", "Show Remove Edits", None, "View"),
     ("view.visualizeSpots", "Visualize Spots", Some("A"), "View"),
     ("view.cropOverlay", "Cycle Crop Overlay", Some("Shift+O"), "View"),
     ("view.cropOverlayOrientation", "Cycle Crop Overlay Orientation", None, "View"),
@@ -693,12 +694,21 @@ pub fn run_ui_command(app: &mut LightcraftApp, id: &str, p: &Value) -> Option<Re
             app.ui.mask_pins = p.get("show").and_then(Value::as_bool).unwrap_or(!app.ui.mask_pins);
             Ok(json!({"maskPins": app.ui.mask_pins}))
         }
+        "view.removeEdits" => {
+            app.ui.remove_edits = p.get("show").and_then(Value::as_bool).unwrap_or(!app.ui.remove_edits);
+            if !app.ui.remove_edits {
+                app.session.active_spot = None;
+            }
+            Ok(json!({"removeEdits": app.ui.remove_edits}))
+        }
         "view.visualizeSpots" => {
             // like Lightroom's A: opens the Remove tool with the view on, or toggles it there
             if app.ui.right == RightPanel::Remove {
                 app.ui.visualize_spots = !app.ui.visualize_spots;
             } else {
                 app.ui.right = RightPanel::Remove;
+                app.ui.start_remove();
+                app.session.active_spot = None;
                 app.ui.visualize_spots = true;
             }
             Ok(Value::Null)
@@ -781,8 +791,9 @@ pub fn run_ui_command(app: &mut LightcraftApp, id: &str, p: &Value) -> Option<Re
         }
         "panel.remove" => {
             panel(app, &ctx, RightPanel::Remove, "Remove");
-            if app.ui.right == RightPanel::Remove && app.ui.tool.is_empty() {
-                app.ui.tool = "remove".into();
+            if app.ui.right == RightPanel::Remove {
+                app.ui.start_remove();
+                app.session.active_spot = None;
             }
             Ok(Value::Null)
         }

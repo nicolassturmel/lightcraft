@@ -1885,8 +1885,8 @@ fn pin(p: &egui::Painter, c: Pos2, sel: bool) {
 
 // ------------------------------------------------------------------------ remove
 
-/// The Remove tool on the photo: every spot's outline and pin (the selected one with its source),
-/// click a pin to select its spot, drag a target or source to move it, paint elsewhere to add one.
+/// Applied outlines/pins are optional; hidden pins must never intercept a new brush stroke.
+/// Visible pins select repairs; only conventional target/source geometry can be moved.
 fn remove_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::Response, map: &CanvasMap, frame: &Frame, d: &DevelopSettings) {
     let long = frame.px_per_long((map.rect.width() * map.k).round().max(1.0) as usize) / map.k as f64;
     let p = ui.painter_at(app.canvas_rect.unwrap_or(map.rect));
@@ -1894,6 +1894,9 @@ fn remove_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::Respo
     // (spot, is source, screen centre, radius) of everything that can be grabbed
     let mut grips: Vec<(usize, bool, Pos2, f32)> = Vec::new();
     for (i, s) in d.spots.iter().enumerate() {
+        if !app.ui.remove_edits {
+            continue;
+        }
         let points = s.ai_patch.as_ref().map(|p| lightcraft_engine::ai_remove::display_stroke(p, frame)).unwrap_or_else(|| s.points.clone());
         let r = (s.size * long) as f32;
         let sel = Some(i) == active;

@@ -46,8 +46,10 @@ retain the portable Rust catalogue and rendering pipeline.
 
 ## AI object removal
 
-Remove → **AI Remove** adds local learned inpainting: paint over an unwanted object, wait for
-“AI removal applied”, then adjust its opacity, undo/redo, delete it, or choose **Regenerate** (`/`).
+Remove opens in **AI Remove** mode on macOS. Paint over an unwanted object and wait for
+“AI removal applied”. Applied brush contours and pins then disappear, and the brush is ready
+for another repair. Enable **Show Remove Edits** to select an existing pin, adjust its opacity,
+delete it, or choose **Regenerate** (`/`). Undo/redo retains the repair independently of overlays.
 The native desktop Web view controls this exact operation on the Mac. Inference runs on a
 worker; changing the original or its edits while it runs discards the stale result. An original still
 requires the explicit per-photo **Download original** action first.
@@ -75,6 +77,11 @@ The source/composite cache prevents re-reading Photos or rerunning inference on 
 A Photos edited-copy recipe includes repair pixels used by its settings/history; oversized recipes
 fail explicitly before saving. Use rendered JPEG/PNG/TIFF exports for AI edits; exporting an
 original/DNG plus a reference-only sidecar is refused rather than losing the generated repair.
+
+APPLE.12 (2026-10-16) defaults Remove to AI on Mac, including reopening/restored panels, and
+automatically hides applied contours/pins after successful inference. The shared
+`view.removeEdits` command and panel checkbox reveal saved repairs. Hidden pins have no hit
+areas, so another stroke can cover the same location.
 
 APPLE.11 validation (2026-10-16): a real Core ML inference test removes a synthetic object,
 preserves the original and unpainted pixels, and reloads its lossless repair asset. Engine tests

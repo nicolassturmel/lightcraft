@@ -346,6 +346,7 @@ fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             for (label, tool) in [("AI Remove", "aiRemove"), ("Remove", "remove"), ("Heal", "heal"), ("Clone", "clone")] {
                 if text_button(ui, &format!("removeMode-{tool}"), label, app.ui.tool == tool).clicked() {
                     app.ui.tool = tool.into();
+                    app.ui.remove_edits = tool != "aiRemove";
                     app.session.active_spot = None;
                 }
             }
@@ -361,6 +362,12 @@ fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         }
         ui.add_space(8.0);
         ui.label(crate::i18n::tr_format!("{} spot(s) on this photo", d.spots.len()));
+        let mut show = app.ui.remove_edits;
+        let response = ui.checkbox(&mut show, crate::i18n::tr("Show Remove Edits"));
+        register(ui.ctx(), "check:removeEdits", response.rect);
+        if response.changed() {
+            let _ = app.run("view.removeEdits", json!({"show": show}));
+        }
         ui.add_space(4.0);
         if text_button(ui, "findDust", crate::i18n::tr("Find Dust Spots"), false)
             .on_hover_text(crate::i18n::tr("Heal the small, soft dark spots sensor dust leaves on smooth areas"))

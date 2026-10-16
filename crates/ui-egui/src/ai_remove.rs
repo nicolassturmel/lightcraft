@@ -27,7 +27,7 @@ fn start(app: &mut LightcraftApp, id: &str, params: &Value) -> Result<Value, Str
             let result = result.and_then(|generated| app.session.execute_fn(&command, |s| job.accept(s, generated)).map_err(|e| e.to_string()));
             match result {
                 Ok(_) => {
-                    app.renderer.retry_photo(photo);
+                    applied(app, photo);
                     app.toast(ctx, crate::i18n::tr("AI removal applied"));
                 }
                 Err(e) => app.toast(ctx, e),
@@ -35,4 +35,13 @@ fn start(app: &mut LightcraftApp, id: &str, params: &Value) -> Result<Value, Str
         },
     )?;
     Ok(json!({"pending":true,"provider":"coreML"}))
+}
+
+/// Leave the completed image unobstructed and the brush ready for another repair.
+pub(crate) fn applied(app: &mut LightcraftApp, photo: lightcraft_catalog::PhotoId) {
+    app.renderer.retry_photo(photo);
+    if app.session.active() == Some(photo) {
+        app.ui.remove_edits = false;
+        app.session.active_spot = None;
+    }
 }

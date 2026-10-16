@@ -1,6 +1,6 @@
 # Lightroom parity checklist
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (local AI Remove with separate repair assets; scores retained) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (AI default and automatic repair-overlay cleanup; scores retained) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 The measured, row-by-row checklist: one row per Lightroom feature, menu item and shortcut, what we
 have and what is missing. It answers *does the feature exist?* (feature breadth). Whether it is good
@@ -259,7 +259,7 @@ differences and missing bindings are in [ui-parity.md](ui-parity.md#shortcuts).
 
 | Id | Feature | Tier | Status | Evidence | Missing / notes |
 |---|---|---|---|---|---|
-| LR-REM-CONTENTAWARE | Content-aware remove | P1 | 🟡 | `cmd:spot.add` (`mode: remove`), `cmd:spot.aiRemove`, `cmd:spot.aiRegenerate`, `crates/engine/src/ai_remove.rs`, `crates/pipeline/src/spots.rs` | portable Remove is heal with automatic source; macOS AI Remove uses bundled local LaMa/Core ML, brush, immutable source-bound patch assets, cached preview/export compositing, undo/redo and explicit regeneration; 800×800 context, fine-detail/large-object quality unverified broadly (APPLE.11) |
+| LR-REM-CONTENTAWARE | Content-aware remove | P1 | 🟡 | `cmd:spot.add` (`mode: remove`), `cmd:spot.aiRemove`, `cmd:spot.aiRegenerate`, `crates/engine/src/ai_remove.rs`, `crates/pipeline/src/spots.rs` | portable Remove is heal with automatic source; macOS AI Remove uses bundled local LaMa/Core ML, brush, immutable source-bound patch assets, cached preview/export compositing, undo/redo and explicit regeneration; 800×800 context, fine-detail/large-object quality unverified broadly; AI is the Mac default, applied outlines/pins hide automatically and `cmd:view.removeEdits` reveals them (APPLE.12) |
 | LR-REM-HEAL | Heal | P0 | ✅ | `cmd:spot.add` (`mode: heal`) | |
 | LR-REM-CLONE | Clone | P0 | ✅ | `cmd:spot.add` (`mode: clone`) | |
 | LR-REM-GEN | Generative remove | OOS | 🚫 | | |
@@ -774,6 +774,7 @@ Latin stays upright. Advanced Japanese composition remains open. Regression cove
 
 ## Revision history
 
+- 2026-10-16: APPLE.12 defaults Mac Remove to AI and hides applied contours/pins; Show Remove Edits restores selection, and hidden pins do not intercept painting. Scores retained.
 - 2026-10-16: APPLE.11 adds Mac AI Remove and regeneration commands with separate durable repair assets; content-aware removal remains partial; spot sync downgraded for source-bound AI patches.
 - 2026-10-15: APPLE.10 shares one Apple RPC worker across image operations, caches browsing pixels independently of edits/catalogue revision, retains genuine originals for retouches, and cancels offscreen filmstrip work. Scores retained.
 - 2026-10-15: APPLE.9 replaces native-focus rereads with a persistent PhotoKit observer, bounded incremental changes, metadata-only notification filtering and explicit reconnection. Scores retained.
