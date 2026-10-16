@@ -59,7 +59,10 @@ before compilation), pinned and SHA-256 verified by `packaging/models/apple-inpa
 no model download prompt or upload at runtime. The existing Apple service worker retains the
 loaded network across strokes. For Cargo-only builds, run
 `bash packaging/macos/prepare-inpaint-model.sh`; `LIGHTCRAFT_APPLE_INPAINT_MODEL` overrides the
-compiled model path. Portable builds cannot generate repairs without the Mac desktop engine.
+compiled model path. macOS CLI packages also resolve the model from their adjacent **Models** folder.
+Portable builds cannot generate repairs without the Mac desktop engine. Standalone browser workers
+report an explicit unsupported error for imported AI repairs because they lack repair-asset
+transport; use the desktop Web view to render those edits.
 
 Original decoded pixels and Photos assets remain unchanged. The JSON edit description stores
 source-bound immutable patch references and the brush recipe; generated linear floating-point

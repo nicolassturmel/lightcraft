@@ -170,6 +170,9 @@ impl WorkerCore {
 
     /// Render `job`; `original` holds the file's bytes when [`WorkerCore::needs_original`] asked.
     pub fn render(&mut self, job: &WireJob, original: Option<&[u8]>) -> Result<Rendered, String> {
+        if job.settings.spots.iter().any(|s| s.mode == lightcraft_engine::develop::SpotMode::Ai) {
+            return Err("AI Remove repair assets require the Mac desktop Web view; standalone browser workers cannot access them".into());
+        }
         let key = job.source_key();
         let src = match self.sources.get(&key).cloned() {
             Some(s) => s,
@@ -341,6 +344,19 @@ impl CacheWatch {
 mod tests {
     use super::*;
     use lightcraft_engine::Session;
+
+    #[test]
+    fn standalone_workers_reject_ai_repairs_without_asset_transport() {
+        let mut session = Session::with_demo();
+        let id = session.visible_cloned()[0];
+        let mut settings = (*session.develop_of(id).unwrap()).clone();
+        settings.spots.push(lightcraft_engine::develop::Spot { mode: lightcraft_engine::develop::SpotMode::Ai, ..Default::default() });
+        session.set_develop(id, settings, "AI repair description").unwrap();
+        let job = session.render_job(id, 64, 64, false, true).unwrap();
+        let wire = WireJob::from_job(&job, false, "Detail");
+        let error = WorkerCore::default().render(&wire, None).err().unwrap();
+        assert!(error.contains("Mac desktop Web view"));
+    }
 
     #[test]
     fn clearing_index_changes_disk_namespace_and_survives_restart() {

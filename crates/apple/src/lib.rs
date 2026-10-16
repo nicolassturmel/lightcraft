@@ -305,8 +305,10 @@ mod native {
         let location = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf));
         let path = if let Some(path) = std::env::var_os("LIGHTCRAFT_APPLE_INPAINT_MODEL") {
             PathBuf::from(path)
-        } else if let Some(dir) = location.filter(|d| d.file_name().is_some_and(|n| n == "MacOS")) {
+        } else if let Some(dir) = location.as_ref().filter(|d| d.file_name().is_some_and(|n| n == "MacOS")) {
             dir.parent().ok_or("invalid app location")?.join("Resources/Models").join(NAME)
+        } else if let Some(dir) = location.filter(|d| d.join("Models").join(NAME).is_dir()) {
+            dir.join("Models").join(NAME)
         } else {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/apple-models").join(NAME)
         };
