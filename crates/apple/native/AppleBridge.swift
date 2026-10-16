@@ -429,20 +429,34 @@ func decodePhotos(_ request: Request) async throws -> [String: Any] {
 }
 
 let adjustmentIdentifier = "com.nicolassturmel.lightcraft.photos"
-let adjustmentVersion = "1"
+let adjustmentVersion = "2"
+
+func photosCopyAdjustment(_ request: Request) throws -> Data {
+    let sourceID = try required(request.asset, "asset")
+    let url = URL(fileURLWithPath: try required(request.recipe, "recipe"))
+    let file = try FileHandle(forReadingFrom: url)
+    defer { try? file.close() }
+    // PhotoKit raises an uncaught Objective-C exception for oversized adjustment data.
+    // Large masks/history/repair pixels must already be saved as a local snapshot by Rust.
+    let recipe = file.readData(ofLength: 64_001)
+    guard !recipe.isEmpty, recipe.count <= 64_000 else {
+        throw BridgeError("Photos adjustment metadata exceeds 64 KB. Save the full recipe locally and attach its reference.")
+    }
+    guard let info = try JSONSerialization.jsonObject(with: recipe) as? [String: Any],
+          let schema = info["schema"] as? Int, schema == 1 || schema == 2,
+          info["originalAssetId"] as? String == sourceID else {
+        throw BridgeError("The adjustment recipe does not belong to the selected Photos original")
+    }
+    return recipe
+}
 
 func savePhotosCopy(_ request: Request) async throws -> [String: Any] {
+    // Validate before any library access/change so bad input cannot start a partial save.
+    let recipe = try photosCopyAdjustment(request)
     _ = try await authorizePhotos()
     let sourceID = try required(request.asset, "asset")
     let source = try photosAsset(sourceID)
     let jpeg = URL(fileURLWithPath: try required(request.path, "path"))
-    let recipeURL = URL(fileURLWithPath: try required(request.recipe, "recipe"))
-    guard (try recipeURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 16_000_000 else { throw BridgeError("Adjustment metadata is too large") }
-    let recipe = try Data(contentsOf: recipeURL)
-    guard let info = try JSONSerialization.jsonObject(with: recipe) as? [String: Any],
-          info["schema"] as? Int == 1, info["originalAssetId"] as? String == sourceID else {
-        throw BridgeError("The adjustment recipe does not belong to the selected Photos original")
-    }
     guard (try jpeg.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 512_000_000 else { throw BridgeError("Photos copy is too large") }
     let jpegData = try Data(contentsOf: jpeg)
     guard let image = CGImageSourceCreateWithURL(jpeg as CFURL, nil), CGImageSourceGetCount(image) > 0,
@@ -505,7 +519,7 @@ func photosRecipe(_ request: Request) async throws -> [String: Any] {
     let asset = try photosAsset(required(request.asset, "asset"))
     let options = PHContentEditingInputRequestOptions()
     options.isNetworkAccessAllowed = request.network ?? false
-    options.canHandleAdjustmentData = { $0.formatIdentifier == adjustmentIdentifier && $0.formatVersion == adjustmentVersion }
+    options.canHandleAdjustmentData = { $0.formatIdentifier == adjustmentIdentifier && ["1", adjustmentVersion].contains($0.formatVersion) }
     let input: PHContentEditingInput = try await withCheckedThrowingContinuation { continuation in
         asset.requestContentEditingInput(with: options) { input, info in
             if let input { continuation.resume(returning: input) }
@@ -513,7 +527,7 @@ func photosRecipe(_ request: Request) async throws -> [String: Any] {
         }
     }
     guard let adjustment = input.adjustmentData, adjustment.formatIdentifier == adjustmentIdentifier,
-          adjustment.formatVersion == adjustmentVersion, adjustment.data.count <= 16_000_000 else { throw BridgeError("This photo has no LightCraft adjustment recipe") }
+          ["1", adjustmentVersion].contains(adjustment.formatVersion), adjustment.data.count <= 16_000_000 else { throw BridgeError("This photo has no LightCraft adjustment recipe") }
     try adjustment.data.write(to: URL(fileURLWithPath: try required(request.output, "output")), options: .atomic)
     return ["schema": 1]
 }

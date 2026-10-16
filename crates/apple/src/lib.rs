@@ -9,6 +9,8 @@ use std::{path::Path, time::Duration};
 pub const PHOTOS_ORIGINAL_REQUIRED: &str = "Click Download original for this photo before editing. Selecting a photo never retrieves its original.";
 
 #[cfg(target_os = "macos")]
+mod recipes;
+#[cfg(target_os = "macos")]
 mod rpc;
 #[cfg(target_os = "macos")]
 mod watch;
@@ -94,7 +96,7 @@ pub fn photos_snapshot() -> Result<Value, String> {
 
 pub fn photos_recipe(asset: &str, network: bool) -> Result<Value, String> {
     #[cfg(target_os = "macos")]
-    return native::photos_file("photos-recipe", Some(asset), network, 16_000_000);
+    return recipes::resolve(native::photos_file("photos-recipe", Some(asset), network, 16_000_000)?);
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (asset, network);
@@ -142,10 +144,10 @@ pub fn save_photos_copy(asset: &str, filename: &str, jpeg: &[u8], recipe: &Value
         let filename = Path::new(filename).file_name().and_then(|s| s.to_str()).filter(|s| *s != "." && *s != "..").ok_or("invalid copy filename")?;
         let image = dir.path().join(filename);
         let metadata = dir.path().join("recipe.json");
-        let data = serde_json::to_vec(recipe).map_err(|e| e.to_string())?;
-        if data.len() > 16_000_000 || jpeg.len() > 512_000_000 {
+        if jpeg.len() > 512_000_000 {
             return Err("Photos copy exceeds the size limit".into());
         }
+        let data = recipes::encode(recipe)?;
         std::fs::File::create(&image).and_then(|mut f| f.write_all(jpeg)).map_err(|e| e.to_string())?;
         std::fs::write(&metadata, data).map_err(|e| e.to_string())?;
         invoke(&serde_json::json!({"operation":"photos-save-copy", "asset":asset, "path":image, "recipe":metadata}), Duration::from_secs(180))

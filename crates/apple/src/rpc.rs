@@ -180,7 +180,7 @@ fn read_reply(output: &mut impl BufRead) -> Result<Value, String> {
         return Err("Oversized Apple service response".into());
     }
     if data.is_empty() {
-        return Err("Apple service disconnected".into());
+        return Err("Apple service disconnected. Use Refresh Photos to reconnect; no operation was replayed.".into());
     }
     serde_json::from_slice(&data).map_err(|e| format!("Invalid Apple service response: {e}"))
 }
@@ -272,5 +272,20 @@ mod tests {
         assert!(read_reply(&mut &b""[..]).unwrap_err().contains("disconnected"));
         assert!(read_reply(&mut &b"nope\n"[..]).unwrap_err().contains("Invalid"));
         assert!(read_reply(&mut vec![b'x'; 192_001].as_slice()).unwrap_err().contains("Oversized"));
+    }
+
+    #[test]
+    fn oversized_photos_adjustments_are_rejected_without_accessing_photos_or_crashing_the_worker() {
+        let service = Service::launch(&super::super::native::helper().unwrap()).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("recipe.json");
+        let recipe = json!({"schema":1,"originalAssetId":"synthetic-no-library-access","mask":"a".repeat(8_000_000)});
+        std::fs::write(&path, serde_json::to_vec(&recipe).unwrap()).unwrap();
+        let request = serde_json::to_vec(&json!({"operation":"photos-save-copy", "asset":"synthetic-no-library-access", "recipe":path})).unwrap();
+        let error = service.call(&request, Duration::from_secs(10)).unwrap_err();
+        assert!(error.contains("exceeds 64 KB"), "{error}");
+        assert!(!service.process.stopped.load(Ordering::Acquire));
+        assert_eq!(service.call(br#"{"operation":"health"}"#, Duration::from_secs(10)).unwrap()["protocol"], 2);
+        assert_eq!(service.process.requests.load(Ordering::Relaxed), 2);
     }
 }

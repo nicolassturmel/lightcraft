@@ -1,6 +1,6 @@
 # Lightroom parity checklist
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (direct full-size JPEG export to Photos in File/context menus; Mac-only coverage) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** patch (bounded Photos metadata and durable large-recipe references; Mac-only coverage) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 The measured, row-by-row checklist: one row per Lightroom feature, menu item and shortcut, what we
 have and what is missing. It answers *does the feature exist?* (feature breadth). Whether it is good
@@ -397,7 +397,7 @@ differences and missing bindings are in [ui-parity.md](ui-parity.md#shortcuts).
 | LR-EXP-PREVIOUS | Export with previous settings | P0 | ✅ | `cmd:app.exportPrevious`, `cmd:dialog.export` | last options persist in prefs.json; dialog prefilled; no named export presets yet |
 | LR-EXP-DNGOPT | DNG options | P2 | 🟡 | `cmd:app.export` (`dngCompression`), `crates/engine/src/export.rs` | compression: lossless JPEG (default), ZIP or none; no embedded JPEG preview size, no lossy DNG output |
 | LR-EXP-ORIGINAL | Original + XMP | P1 | ✅ | `cmd:app.export` (`format: original`), `crates/engine/src/tests_export.rs` | file copied byte for byte, sidecar named after the output and subject to the conflict policy |
-| LR-EXP-PHOTOS | Export to the system photo library | P2 | 🟡 | `cmd:photo.saveApplePhotosCopy`, `crates/engine/src/apple.rs`, `crates/ui-egui/src/menubar.rs`, `crates/ui-egui/src/panels/grid.rs` | Mac Photos fork: File and grid/detail/filmstrip context menus export the active/clicked photo directly as full-size JPEG, quality 100, sRGB/4:4:4, to Photos > LightCraft; original unchanged, edit recipe attached, explicit-original download policy retained; native Web view shares the operation. Other system libraries/portable builds unsupported (APPLE.13) |
+| LR-EXP-PHOTOS | Export to the system photo library | P2 | 🟡 | `cmd:photo.saveApplePhotosCopy`, `crates/engine/src/apple.rs`, `crates/apple/src/recipes.rs`, `crates/ui-egui/src/menubar.rs`, `crates/ui-egui/src/panels/grid.rs` | Mac Photos fork: File and grid/detail/filmstrip context menus export the active/clicked photo directly as full-size JPEG, quality 100, sRGB/4:4:4, to Photos > LightCraft; original unchanged, explicit-original policy retained; Web shares the operation. Recipes >64 KB use immutable local snapshots with verified references to avoid a PhotoKit exception; large recipes require the Export Recipes folder when moving Macs. Other system libraries/portable builds unsupported (APPLE.14) |
 | LR-EXP-PSD | Round trip to an external editor | P2 | ✅ | `cmd:photo.editExternal`, `cmd:photo.editInExternal`, `crates/engine/src/cmd/convert.rs` | a 16-bit TIFF `-Edit` copy with the edits (Adobe RGB / ProPhoto / P3 / sRGB) next to the original, added stacked on top of it and opened in the editor set in Settings ▸ General (or the system default) |
 
 ## T. Share (SHARE)
@@ -774,6 +774,7 @@ Latin stays upright. Advanced Japanese composition remains open. Regression cove
 
 ## Revision history
 
+- 2026-10-16: APPLE.14 bounds PhotoKit adjustment metadata, retains large recipes in immutable local snapshots and verifies references on reopening; oversized native requests return errors instead of terminating the worker. System-library coverage remains partial and scores unchanged.
 - 2026-10-16: APPLE.13 exposes direct full-size quality-100 JPEG export to Photos > LightCraft in File and photo context menus. System-library export marked partial for Mac-only coverage; checklist recounted, readiness unchanged.
 - 2026-10-16: APPLE.12 defaults Mac Remove to AI and hides applied contours/pins; Show Remove Edits restores selection, and hidden pins do not intercept painting. Scores retained.
 - 2026-10-16: APPLE.11 adds Mac AI Remove and regeneration commands with separate durable repair assets; content-aware removal remains partial; spot sync downgraded for source-bound AI patches.

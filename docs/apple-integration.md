@@ -74,8 +74,9 @@ with adjustment JSON. Undo retains the assets for redo/history. Missing/corrupt 
 an error; selecting a photo never regenerates them or downloads an original. Preview, crop,
 rotation, colour edits and rendered exports all composite the same saved patch before development.
 The source/composite cache prevents re-reading Photos or rerunning inference on slider changes.
-A Photos edited-copy recipe includes repair pixels used by its settings/history; oversized recipes
-fail explicitly before saving. Use rendered JPEG/PNG/TIFF exports for AI edits; exporting an
+A Photos edited-copy recipe includes repair pixels used by its settings/history. Large recipes
+are retained as immutable local snapshots with a small reference in Photos; recipes exceeding
+16 MB fail explicitly before saving. Use rendered JPEG/PNG/TIFF exports for AI edits; exporting an
 original/DNG plus a reference-only sidecar is refused rather than losing the generated repair.
 
 APPLE.12 (2026-10-16) defaults Remove to AI on Mac, including reopening/restored panels, and
@@ -242,11 +243,28 @@ exports the clicked photo even when another selected photo is active. The deskto
 uses these same menus and the same background export job. Opening a menu never downloads an
 original or starts an export; an unavailable original still needs its explicit download action.
 The source’s capture date and location are carried onto the copy. Every save creates a new copy. The new
-asset receives `PHAdjustmentData` with the original’s local identifier and the edit recipe,
+asset receives `PHAdjustmentData` with the original’s local identifier and the edit recipe or its local snapshot reference,
 using `PHContentEditingOutput(placeholderForCreatedAsset:)` in the same PhotoKit change block.
 Only asset creation requests are issued; no source edit or delete requests are issued.
 If recipe attachment fails after the rendered copy is saved, LightCraft reports that partial
 result and retains the copy and local draft.
+
+APPLE.14 (2026-10-16) fixes the native service crash caused by PhotoKit rejecting large
+adjustment data (observed `NSInvalidArgumentException: Adjustment data is too large`). Recipes
+up to 64 KB remain embedded; larger descriptions, including masks, history and AI repair pixels,
+are saved atomically as immutable SHA-256-named JSON files under
+`~/Library/Application Support/LightCraft/Photos Adjustments/Export Recipes/`. Photos receives
+only a small, source-bound reference. The helper rejects oversized metadata before accessing
+Photos, so malformed requests return an error and leave the persistent worker alive. No failed
+write is replayed automatically. Small embedded recipes from the previous version still reopen.
+
+**Back up Export Recipes with Photos Adjustments.** Large descriptions do not travel through
+iCloud with the JPEG; reopening such a copy on another Mac requires restoring this folder.
+Reopening checks the complete file's length, SHA-256 and original identifier; missing or corrupt
+files produce an error rather than applying incomplete edits. Later edits to the original's local
+draft do not change the saved copy's snapshot. Synthetic regression tests round-trip an 8 MB
+description and keep the native worker alive after an oversized direct save request, without
+requesting Photos access or creating an asset in a personal library.
 
 Copies display their already-rendered image with default settings. To resume a saved edit,
 select a LightCraft copy and use **Photo → Reopen Photos Adjustments**: the recipe selects its
