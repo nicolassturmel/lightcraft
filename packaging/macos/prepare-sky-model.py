@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch Apple's pinned Apache-2.0 model as a build input, never at application runtime."""
+"""Fetch pinned Apache-2.0 Core ML build inputs, never at application runtime."""
 import argparse
 import hashlib
 import json
@@ -26,17 +26,22 @@ def prepare(manifest, cache):
     if len(data) > 65536:
         raise ValueError('Oversized Apple model manifest')
     model = json.loads(data)
-    if model['repository'] != 'apple/coreml-detr-semantic-segmentation' or not re.fullmatch(r'[0-9a-f]{40}', model['revision']):
+    sources = {
+        'apple/coreml-detr-semantic-segmentation': ('apple-sky-source.sha256', 128000000),
+        'mlboydaisuke/LaMa-CoreML': ('apple-inpaint-source.sha256', 256000000),
+    }
+    if model['repository'] not in sources or not re.fullmatch(r'[0-9a-f]{40}', model['revision']):
         raise ValueError('Unpinned Apple model source')
+    marker_name, byte_limit = sources[model['repository']]
     package = model['package']
     if not re.fullmatch(r'[A-Za-z0-9]+\.mlpackage', package) or not 0 < len(model['files']) <= 64:
         raise ValueError('Invalid Apple model package')
-    if sum(item['size'] for item in model['files']) > 128000000:
+    if sum(item['size'] for item in model['files']) > byte_limit:
         raise ValueError('Oversized Apple model package')
     for item in model['files']:
         relative = PurePosixPath(item['path'])
         size, checksum = item['size'], item['sha256']
-        if relative.is_absolute() or '..' in relative.parts or relative.parts[0] != package or not 0 < size <= 100000000 or not re.fullmatch(r'[0-9a-f]{64}', checksum):
+        if relative.is_absolute() or '..' in relative.parts or relative.parts[0] != package or not 0 < size <= byte_limit or not re.fullmatch(r'[0-9a-f]{64}', checksum):
             raise ValueError('Invalid Apple model asset')
         destination = cache.joinpath(*relative.parts)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -68,7 +73,7 @@ def prepare(manifest, cache):
             if temporary and temporary.exists():
                 temporary.unlink()
     cache.mkdir(parents=True, exist_ok=True)
-    marker = cache / 'apple-sky-source.sha256'
+    marker = cache / marker_name
     marker.write_text(hashlib.sha256(data).hexdigest() + '\n')
 
 

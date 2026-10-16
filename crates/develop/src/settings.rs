@@ -982,6 +982,8 @@ pub enum SpotMode {
     Remove,
     Heal,
     Clone,
+    /// Learned inpainting, kept as a separate immutable source repair.
+    Ai,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -996,11 +998,13 @@ pub struct Spot {
     pub opacity: f64,
     /// Source offset (normalized) from the target; None = auto (content-aware remove).
     pub source_offset: Option<Point>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_patch: Option<crate::AiPatch>,
 }
 
 impl Default for Spot {
     fn default() -> Self {
-        Self { mode: SpotMode::Remove, points: Vec::new(), size: 0.02, feather: 50.0, opacity: 100.0, source_offset: None }
+        Self { mode: SpotMode::Remove, points: Vec::new(), size: 0.02, feather: 50.0, opacity: 100.0, source_offset: None, ai_patch: None }
     }
 }
 

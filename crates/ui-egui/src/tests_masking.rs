@@ -1212,3 +1212,15 @@ fn color_range_pick_button_samples_the_photo() {
     assert!(h.app.ui.tool.is_empty());
     h.settle(SETTLE);
 }
+
+#[test]
+fn remove_panel_offers_an_explicit_ai_mode_without_creating_a_fake_heal_spot() {
+    let mut h = detail("panel.remove");
+    click(&mut h, "button:removeMode-aiRemove");
+    assert_eq!(h.app.ui.tool, "aiRemove");
+    assert!(develop(&h).spots.is_empty());
+    assert!(h.app.session.commands().iter().any(|c| c.id == "spot.aiRemove"));
+    click(&mut h, "button:removeMode-heal");
+    assert_eq!(h.app.ui.tool, "heal");
+    assert!(develop(&h).spots.is_empty());
+}

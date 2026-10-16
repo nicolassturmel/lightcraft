@@ -1,6 +1,6 @@
 # Lightroom parity checklist
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (shared Apple worker and independent pixel caches; scores retained) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (local AI Remove with separate repair assets; scores retained) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 The measured, row-by-row checklist: one row per Lightroom feature, menu item and shortcut, what we
 have and what is missing. It answers *does the feature exist?* (feature breadth). Whether it is good
@@ -34,7 +34,7 @@ cited here still exists. Formerly docs/parity.md.
 | F. Edit panel — global adjustments (EDIT) | 43 | 2 | 3 | 1 | 28/28 (100%) | 13/14 (93%) |
 | G. Profiles (PROF) | 7 | 1 | 3 | 0 | 3/4 (75%) | 3/3 (100%) |
 | H. Crop & rotate (CROP) | 9 | 0 | 0 | 1 | 6/6 (100%) | 3/3 (100%) |
-| I. Remove / healing (REM) | 7 | 1 | 2 | 2 | 4/4 (100%) | 2/3 (67%) |
+| I. Remove / healing (REM) | 6 | 2 | 2 | 2 | 4/4 (100%) | 1/3 (33%) |
 | J. Red eye (EYE) | 2 | 0 | 0 | 0 | — | 1/1 (100%) |
 | K. Masking (MASK) | 13 | 5 | 5 | 0 | 7/8 (88%) | 5/5 (100%) |
 | L. Presets (PRE) | 6 | 0 | 1 | 1 | 2/2 (100%) | 2/2 (100%) |
@@ -53,9 +53,9 @@ cited here still exists. Formerly docs/parity.md.
 | Y. Menus | 82 | 0 | 4 | 8 | 47/47 (100%) | 23/23 (100%) |
 | Z. Keyboard shortcuts (desktop) | 75 | 3 | 3 | 1 | 49/52 (94%) | 23/24 (96%) |
 | Lightroom Classic extras | 33 | 15 | 35 | 9 | — | 23/25 (92%) |
-| **Total** | 397 | 49 | 73 | 36 | 192/200 (96%) | 143/155 (92%) |
+| **Total** | 396 | 50 | 73 | 36 | 192/200 (96%) | 142/155 (92%) |
 
-Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **81.2%** of 519 in-scope rows — P0 98.0% of 200 · P1 95.2% of 155 · P2 47.2% of 163.
+Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **81.1%** of 519 in-scope rows — P0 98.0% of 200 · P1 94.8% of 155 · P2 47.2% of 163.
 <!-- /parity:summary -->
 
 ## Top gaps and shortcut notes
@@ -259,18 +259,18 @@ differences and missing bindings are in [ui-parity.md](ui-parity.md#shortcuts).
 
 | Id | Feature | Tier | Status | Evidence | Missing / notes |
 |---|---|---|---|---|---|
-| LR-REM-CONTENTAWARE | Content-aware remove | P1 | 🟡 | `cmd:spot.add` (`mode: remove`), `crates/pipeline/src/spots.rs` | heal with automatic source; no patch synthesis (M8.4) |
+| LR-REM-CONTENTAWARE | Content-aware remove | P1 | 🟡 | `cmd:spot.add` (`mode: remove`), `cmd:spot.aiRemove`, `cmd:spot.aiRegenerate`, `crates/engine/src/ai_remove.rs`, `crates/pipeline/src/spots.rs` | portable Remove is heal with automatic source; macOS AI Remove uses bundled local LaMa/Core ML, brush, immutable source-bound patch assets, cached preview/export compositing, undo/redo and explicit regeneration; 800×800 context, fine-detail/large-object quality unverified broadly (APPLE.11) |
 | LR-REM-HEAL | Heal | P0 | ✅ | `cmd:spot.add` (`mode: heal`) | |
 | LR-REM-CLONE | Clone | P0 | ✅ | `cmd:spot.add` (`mode: clone`) | |
 | LR-REM-GEN | Generative remove | OOS | 🚫 | | |
 | LR-REM-DETECT | Object detection for remove | P2 | ⬜ | | |
 | LR-REM-BRUSH-PARAMS | Brush size / feather / opacity | P0 | ✅ | `cmd:spot.add` (`size`, `feather`, `opacity`), `cmd:brush.smaller`, `cmd:brush.larger`, `cmd:brush.featherLess`, `cmd:brush.featherMore`, `crates/ui-egui/src/panels/right.rs` | Size / Feather / Opacity sliders (for new spots and the selected one); `[` `]` size, ⇧`[` ⇧`]` feather (also the Masking brush) |
-| LR-REM-SPOT-EDIT | Edit existing spots | P0 | ✅ | `cmd:spot.select`, `cmd:spot.update`, `cmd:spot.refreshSource`, `cmd:spot.delete` | click a pin to select, drag target or source, ⌫ deletes the selected spot, `/` picks another source; automatic sources are resolved when the spot is added |
+| LR-REM-SPOT-EDIT | Edit existing spots | P0 | ✅ | `cmd:spot.select`, `cmd:spot.update`, `cmd:spot.refreshSource`, `cmd:spot.aiRegenerate`, `cmd:spot.delete` | AI repairs allow opacity, delete and explicit regeneration; geometry stays fixed in source coordinates. Conventional spots: click a pin to select, drag target or source, ⌫ deletes the selected spot, `/` picks another source; automatic sources are resolved when the spot is added |
 | LR-REM-VISUALIZE | Visualize spots | P1 | ✅ | `cmd:view.visualizeSpots` | |
 | LR-REM-PEOPLE | Remove people (generative) | OOS | 🚫 | | |
 | LR-REM-REFLECT | Remove reflections | P2 | ⬜ | | |
 | LR-REM-DUST | Dust detection | P2 | ✅ | `cmd:spot.findDust`, `crates/pipeline/src/dust.rs` | Remove panel ▸ Find Dust Spots: small, soft, round dark spots on smooth areas become heal spots (sensitivity; one undo step); Visualize Spots for checking by eye |
-| LR-REM-SYNC | Sync spots | P1 | ✅ | `cmd:develop.copy` (`groups`), `crates/develop/src/presets.rs` | |
+| LR-REM-SYNC | Sync spots | P1 | 🟡 | `cmd:develop.copy` (`groups`), `crates/develop/src/presets.rs` | conventional spots sync; AI patch pixels belong to one original and cannot be pasted onto another photo |
 
 ## J. Red eye (EYE)
 
@@ -774,6 +774,7 @@ Latin stays upright. Advanced Japanese composition remains open. Regression cove
 
 ## Revision history
 
+- 2026-10-16: APPLE.11 adds Mac AI Remove and regeneration commands with separate durable repair assets; content-aware removal remains partial; spot sync downgraded for source-bound AI patches.
 - 2026-10-15: APPLE.10 shares one Apple RPC worker across image operations, caches browsing pixels independently of edits/catalogue revision, retains genuine originals for retouches, and cancels offscreen filmstrip work. Scores retained.
 - 2026-10-15: APPLE.9 replaces native-focus rereads with a persistent PhotoKit observer, bounded incremental changes, metadata-only notification filtering and explicit reconnection. Scores retained.
 - 2026-10-15: APPLE.8 fixes Photos refresh loops, defers completed responses during gestures, preserves unchanged projections, and prevents original retrieval on selection/prefetch/processing. Scores retained.

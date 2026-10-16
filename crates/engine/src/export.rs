@@ -1452,6 +1452,11 @@ fn prepare_guarded(
         let hdr_job = if gain_map { Some(session.export_job(id, w, h, o.effective_space(), OutputDepth::F32Hdr)?) } else { None };
         (Work::Render(Box::new(RenderWork { job, hdr_job, meta, opts: o.clone() })), weight)
     } else {
+        if p.develop.spots.iter().any(|s| s.mode == lightcraft_develop::SpotMode::Ai) {
+            return Err(
+                "AI Remove repairs use separate assets. Export JPEG, PNG or TIFF, and keep the AI Remove folder with the editable library.".into()
+            );
+        }
         let lightcraft_catalog::Source::File { path } = &p.source else {
             return Err(format!("{} is a generated demo photo: it has no original file to export", p.file_name));
         };

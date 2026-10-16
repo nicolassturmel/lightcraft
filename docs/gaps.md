@@ -1,6 +1,6 @@
 # Gaps: where LightCraft falls short of Lightroom
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (shared Apple worker and independent pixel caches; scores unchanged) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (local AI Remove with separate repair assets; scores unchanged) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 Every known shortfall, one entry each, ranked by user impact (how many Lightroom users hit it, and
 how hard it blocks them), then by effort. **Agents pick work from the top** (the first entry nobody is
@@ -32,7 +32,7 @@ resource access is blocked until the per-photo Download original action, even fo
 Preview/RAW/Vision calls now share one persistent helper. Browsing pixels are cached independently
 of edits/catalogue revision; decoded originals are reused across retouches and lossless disk backing
 keeps exports available after RAM eviction/restart. Offscreen filmstrip
-work is cancelled. See [apple-integration.md](apple-integration.md). The portable gaps and scores below remain
+work is cancelled. APPLE.11 adds local LaMa/Core ML inpainting to Remove, with source-bound repair assets, undo/redo, regeneration and shared preview/export compositing. Its 800×800 context and manual brush do not close broad cleanup-quality/detection parity. See [apple-integration.md](apple-integration.md). The portable gaps and scores below remain
 open; no broader camera-coverage claim is made from one Canon R8 test.
 
 ## Ranked
@@ -50,7 +50,7 @@ open; no broader camera-coverage claim is made from one Canon R8 test.
 | 9 B | **Tests don't run in CI on macOS, Windows or Linux x64**: only FreeBSD runs `cargo test`; the others build packages | `.github/workflows/` (freebsd, packaging-lint, release, windows-arm64) | regressions reach users on the main platforms; `cargo xtask ci` runs only locally | 6–12 | [target-app-parity](target-app-parity.md#by-dimension) |
 | 10 B | **Per-model verification thin, plus cheap per-body decode fixes**: 234 of 1,446 Adobe models verified (16%), ~40% of photographers on a verified body; Nikon 5 bodies verified, Canon 11. Cheap fixes: Z 6II packed 14-bit NEF (#769, PR #671), Sony A100 / F828 regression (#702), DSLR-A200…A390 / A850 12-bit ARW (#535) | measured: [raw/coverage.tsv](raw/coverage.tsv) | per-body bugs (levels, crops, WB) surface only from users | 25–45 | [raw-parity](raw-parity.md#by-maker-measured) |
 | 11 | **Enhance: Raw Details, Super Resolution; AI denoise without shippable weights or X-Trans** | ENH rows 0%; denoise Bayer only, RawNIND weights GPL and opt-in | Fujifilm users get no AI denoise; nobody gets it out of the box | 30–60 + model decision | [raw-parity](raw-parity.md#demosaic-levels-crops-and-lens-metadata) |
-| 12 | **Content-aware / generative remove, detect distractions, reflections removal** | REM rows 75%; patch synthesis missing | cleanup work goes back to Photoshop | 25–45 (+ generative model) | [target-app-parity](target-app-parity.md#ai) |
+| 12 | **Content-aware / generative remove, detect distractions, reflections removal** | portable remove still copies textures; this Mac fork adds local LaMa inpainting, but fine detail/large objects and detection remain limited | cleanup work goes back to Photoshop | 25–45 (+ generative model) | [target-app-parity](target-app-parity.md#ai) |
 | 13 | **Lightroom catalog migration is one-way and approximate**: unsupported Adobe profiles / AI settings archived, history kept as data | lightroom-catalog-import.md | switching users lose some looks | 8–12 | [file-format-parity](file-format-parity.md) |
 | 14 | **HDR display** (EDR / Windows HDR); HLG; HDR settings from `crs` XMP | HDR rows 70%; LR-VIEW-HDR-DISPLAY ⬜ | HDR editing works blind on HDR monitors | 12–25 | [hardware-parity](hardware-parity.md) |
 | 15 | **Print module**: custom packages, printer colour management (contact-sheet PDF only) | LRC-PRINT rows | Classic users who print | 25–40 | [target-app-parity](target-app-parity.md#features) |
@@ -94,6 +94,7 @@ Beta-blocking gaps (B) total **~230–430 h**; with the stability and platform w
 
 ## Revision history
 
+- 2026-10-16: APPLE.11 adds explicit local Core ML AI Remove, separate durable source-bound repair assets, immutable originals, cached rendering, regeneration and undo/redo. Quality/detection gaps and scores remain.
 - 2026-10-15: APPLE.10 replaces per-image helper launches with one serialized persistent Apple worker, separates source/revision browsing cache keys from edits, reuses decoded originals with lossless disk backing for exports after RAM eviction/restart, and cancels offscreen filmstrip work. Scores unchanged.
 
 - 2026-10-15: APPLE.9 replaces native-focus refreshes with one persistent PhotoKit observer and bounded incremental events; unchanged metadata notifications are filtered and unaffected records/edits/caches survive. Scores unchanged.

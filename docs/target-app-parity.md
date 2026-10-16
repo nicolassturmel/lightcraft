@@ -1,6 +1,6 @@
 # Target-app parity: LightCraft vs Adobe Lightroom
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (shared Apple worker and independent pixel caches; scores unchanged) · **Target:** Adobe Lightroom Classic 15.5 (August 2026) and Lightroom 9.6 (desktop)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (local AI Remove with separate repair assets; scores unchanged) · **Target:** Adobe Lightroom Classic 15.5 (August 2026) and Lightroom 9.6 (desktop)
 
 The authoritative assessment of how close LightCraft is to Lightroom. The row-by-row checklist is
 [parity-checklist.md](parity-checklist.md); the ranked work list is [gaps.md](gaps.md); deep areas
@@ -12,7 +12,7 @@ have their own documents: [raw-parity.md](raw-parity.md), [file-format-parity.md
 
 | Number | Value | Kind |
 |---|---:|---|
-| **Feature breadth**, checklist | **81.1%** of 517 in-scope rows (P0 98.0%, P1 95.1%, P2 46.9%) | **measured**: recount of [parity-checklist.md](parity-checklist.md) rows (✅ 1, 🟡 ½, 🚫 left out), the same rule `cargo xtask parity` uses |
+| **Feature breadth**, checklist | **81.1%** of 519 in-scope rows (P0 98.0%, P1 94.8%, P2 47.2%) | **measured**: recount of [parity-checklist.md](parity-checklist.md) rows (✅ 1, 🟡 ½, 🚫 left out), the same rule `cargo xtask parity` uses |
 | **Feature breadth**, weighted by use | **~77%** | estimated: feature-area table below |
 | **Ready for real work** (full target) | **~61%** (range 56–66%) | estimated: weighted sum over the dimensions with written weights, see [below](#ready-for-real-work-mainstream-practitioner-and-essentials-user) |
 | **Mainstream practitioner** | **~49%** (range 44–54%) | estimated: weekly areas of a working photographer, depth 71.8% × 0.804 × colour 0.85 |
@@ -96,7 +96,7 @@ search embeddings; generative remove runs in Adobe's cloud.
 | Depth range mask, Lens Blur | — | ⬜ |
 | AI Denoise | Bayer only, pure-Rust CPU / GPU, user-installed weights | 🟡 |
 | Raw Details, Super Resolution | — | ⬜ |
-| Generative remove, distractions, reflections | — (generative is out of scope: cloud) | ⬜ |
+| Generative remove, distractions, reflections | Mac fork: manual local LaMa/Core ML AI Remove with separate source-bound repair assets and regeneration; 800×800 context; automatic detection/reflections unavailable. Cloud generative parity remains out of scope | 🟡 |
 | Dust detection | ✅ | ✅ |
 | Faces / People | YuNet detection, SFace / AuraFace recognition (opt-in downloads), People view | ✅ (MVP, [faces.md](faces.md)) |
 | Assisted culling | focus, bursts | 🟡 (no eyes-open / aesthetics scores) |
@@ -297,6 +297,7 @@ P2 items 12–25 h; look tuning, performance, packaging, hardening 25–45 h.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | minor | APPLE.11: local LaMa/Core ML AI Remove, durable source-bound repair assets, common preview/export engine, regeneration and undo/redo. Manual 800×800 context is not broad cleanup-quality parity. Checklist recounted (519 in-scope rows, P1 94.8%, P2 47.2%); readiness estimates unchanged. |
 | 2026-10-15 | minor | APPLE.10: one persistent Apple RPC worker; Photos browsing pixels cached by source/revision across edits/sizes; genuine originals reused for renders with lossless disk backing for exports after RAM eviction/restart; obsolete filmstrip work cancelled. Scores unchanged. |
 | 2026-10-15 | minor | APPLE.9: persistent PhotoKit change observer, incremental asset/album updates, no native-focus reread, bounded/coalesced events and explicit reconnect on errors. Scores unchanged. |
 | 2026-10-15 | minor | APPLE.8: no periodic or browser-focus Photos rescan; completed responses wait for gestures, identical metadata preserves caches, and selection/prefetch/processing cannot retrieve originals before the per-photo action. Scores unchanged. |

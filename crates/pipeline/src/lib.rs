@@ -382,9 +382,18 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
     visualize::adjust_settings(req.overlay, &mut settings);
     // a window must not choose a spot's source from the pixels it happens to hold: fix them
     // from a fixed-size render of the whole frame first
-    if req.window.is_some() && settings.spots.iter().any(|sp| sp.source_offset.is_none()) {
-        let picked: Vec<Option<lightcraft_geom::Point>> =
-            settings.spots.iter().map(|sp| sp.source_offset.or_else(|| spots::pick_source(src, info, &settings, sp, None))).collect();
+    if req.window.is_some() && settings.spots.iter().any(|sp| sp.mode != lightcraft_develop::SpotMode::Ai && sp.source_offset.is_none()) {
+        let picked: Vec<Option<lightcraft_geom::Point>> = settings
+            .spots
+            .iter()
+            .map(|sp| {
+                if sp.mode == lightcraft_develop::SpotMode::Ai {
+                    None
+                } else {
+                    sp.source_offset.or_else(|| spots::pick_source(src, info, &settings, sp, None))
+                }
+            })
+            .collect();
         for (sp, o) in settings.to_mut().spots.iter_mut().zip(picked) {
             sp.source_offset = o;
         }

@@ -160,6 +160,7 @@ pub fn window_for_reads_checked(
     // (target box, source box) of each spot, in output pixels: [x0, y0, x1, y1]
     let boxes: Vec<([f64; 4], [f64; 4])> = spots
         .iter()
+        .filter(|spot| spot.mode != SpotMode::Ai)
         .filter_map(|spot| {
             let r = (spot.size * ppl).max(1.0);
             let pts: Vec<_> = spot.points.iter().map(|p| to_out.apply(*p)).collect();
@@ -243,6 +244,11 @@ pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
     let (w, h) = (img.width, img.height);
     let to_out = frame.norm_to_out(w, h);
     for spot in spots {
+        // AI repairs are composited into a separate source buffer by the engine. They must
+        // never fall back to the conventional texture-copy algorithm.
+        if spot.mode == SpotMode::Ai {
+            continue;
+        }
         let r = (spot.size * ppl).max(1.0) as f32;
         let pts: Vec<(f32, f32)> = spot
             .points

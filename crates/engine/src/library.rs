@@ -387,6 +387,7 @@ impl Session {
         let presets_written = presets_json(self);
         // photo ids are per library: drop decoded sources of the previous one
         self.media.clear_sources();
+        self.media.ai_assets = std::sync::Arc::new(crate::ai_remove::AiAssets::new(on_disk.then(|| dir.join("AI Remove"))));
         if on_disk {
             self.media.attach_disk_cache(&dir.join("thumbs"), self.cache_bytes());
         }

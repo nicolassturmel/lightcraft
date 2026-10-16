@@ -183,6 +183,17 @@ pub fn decode_raw_bytes(bytes: &[u8], max_edge: usize) -> Result<RawImage, Strin
     }
 }
 
+/// Local learned object removal. Fixed-size, bounded inputs; never retrieves a model or a photo.
+pub fn inpaint(rgba: &[[u8; 4]], mask: &[u8]) -> Result<Vec<[u8; 4]>, String> {
+    if rgba.len() != 800 * 800 || mask.len() != rgba.len() || !mask.iter().any(|v| *v > 0) {
+        return Err("invalid AI Remove image or mask".into());
+    }
+    #[cfg(target_os = "macos")]
+    return native::inpaint(rgba, mask);
+    #[cfg(not(target_os = "macos"))]
+    Err("AI Remove requires the macOS desktop engine".into())
+}
+
 /// Vision coverage over the uncropped, oriented, linear Rec.2020 image, stretched to a square.
 pub fn foreground_mask(width: usize, height: usize, pixels: &[[f32; 3]], side: usize) -> Result<Vec<f32>, String> {
     vision_mask(width, height, pixels, side, None, false)
@@ -287,6 +298,39 @@ mod native {
             return Err("Apple sky model missing. Run packaging/macos/prepare-sky-model.sh or rebuild the macOS package.".into());
         }
         Ok(path)
+    }
+
+    pub fn inpaint_model() -> Result<PathBuf, String> {
+        const NAME: &str = "LaMa.mlmodelc";
+        let location = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf));
+        let path = if let Some(path) = std::env::var_os("LIGHTCRAFT_APPLE_INPAINT_MODEL") {
+            PathBuf::from(path)
+        } else if let Some(dir) = location.filter(|d| d.file_name().is_some_and(|n| n == "MacOS")) {
+            dir.parent().ok_or("invalid app location")?.join("Resources/Models").join(NAME)
+        } else {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/apple-models").join(NAME)
+        };
+        if !path.is_dir() {
+            return Err("AI Remove model missing. Rebuild the macOS package with prepare-inpaint-model.sh.".into());
+        }
+        Ok(path)
+    }
+
+    pub fn inpaint(rgba: &[[u8; 4]], mask: &[u8]) -> Result<Vec<[u8; 4]>, String> {
+        let model = inpaint_model()?;
+        let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let image = directory.path().join("image.rgba");
+        let matte = directory.path().join("mask.gray");
+        let output = directory.path().join("output.rgba");
+        let bytes: Vec<u8> = rgba.iter().flatten().copied().collect();
+        fs::write(&image, bytes).map_err(|e| e.to_string())?;
+        fs::write(&matte, mask).map_err(|e| e.to_string())?;
+        invoke(&json!({"operation":"image-inpaint", "path":image, "mask":matte, "output":output, "model":model}), Duration::from_secs(180))?;
+        let bytes = bounded_read(&output, 800 * 800 * 4)?;
+        if bytes.len() != 800 * 800 * 4 {
+            return Err("truncated AI Remove output".into());
+        }
+        Ok(bytes.as_chunks::<4>().0.to_vec())
     }
 
     pub(super) fn helper() -> Result<PathBuf, String> {

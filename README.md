@@ -15,6 +15,8 @@ and **Apple Vision Subject/Background/Object masks**. Sky masks use Apple’s pu
 segmentation model locally through **Vision / Core ML**, with source-edge refinement. Originals
 stay unchanged. Edits save as adjustment
 metadata; **⌘S** creates an edited copy with its recipe in a Photos album named **LightCraft**.
+The Remove panel also offers **AI Remove**: local Core ML inpainting, with generated repairs
+stored separately from the original and shared by desktop and its Web view.
 See [Apple integration](docs/apple-integration.md) for permissions, build instructions and usage.
 The [desktop Web view](docs/web.md#desktop-view), enabled with `--web 8080`, shares the Mac’s
 engine, Photos library, selection, history and previews; the browser is a thin controller.

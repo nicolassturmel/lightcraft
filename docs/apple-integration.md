@@ -44,6 +44,48 @@ file-library path. `--library DIR` or an explicit `LIGHTCRAFT_LIBRARY` environme
 a legacy file catalogue. `--memory` / `--demo` provides a throwaway test session. Other platforms
 retain the portable Rust catalogue and rendering pipeline.
 
+## AI object removal
+
+Remove → **AI Remove** adds local learned inpainting: paint over an unwanted object, wait for
+“AI removal applied”, then adjust its opacity, undo/redo, delete it, or choose **Regenerate** (`/`).
+The native desktop Web view controls this exact operation on the Mac. Inference runs on a
+worker; changing the original or its edits while it runs discards the stale result. An original still
+requires the explicit per-photo **Download original** action first.
+
+This uses LaMa through Apple's public Core ML API, not Photos' proprietary Clean Up engine.
+No public Clean Up inference API was found in the installed SDK. LaMa is bundled (about 217 MB
+before compilation), pinned and SHA-256 verified by `packaging/models/apple-inpaint.json` and
+`prepare-inpaint-model.sh`. Build-time preparation needs a network connection once; there is
+no model download prompt or upload at runtime. The existing Apple service worker retains the
+loaded network across strokes. For Cargo-only builds, run
+`bash packaging/macos/prepare-inpaint-model.sh`; `LIGHTCRAFT_APPLE_INPAINT_MODEL` overrides the
+compiled model path. Portable builds cannot generate repairs without the Mac desktop engine.
+
+Original decoded pixels and Photos assets remain unchanged. The JSON edit description stores
+source-bound immutable patch references and the brush recipe; generated linear floating-point
+pixels and alpha live in **Photos Adjustments/AI Remove/*.lcaip** (or the file library's **AI
+Remove** folder). These are permanent edit assets, not disposable previews: back up that folder
+with adjustment JSON. Undo retains the assets for redo/history. Missing/corrupt assets produce
+an error; selecting a photo never regenerates them or downloads an original. Preview, crop,
+rotation, colour edits and rendered exports all composite the same saved patch before development.
+The source/composite cache prevents re-reading Photos or rerunning inference on slider changes.
+A Photos edited-copy recipe includes repair pixels used by its settings/history; oversized recipes
+fail explicitly before saving. Use rendered JPEG/PNG/TIFF exports for AI edits; exporting an
+original/DNG plus a reference-only sidecar is refused rather than losing the generated repair.
+
+APPLE.11 validation (2026-10-16): a real Core ML inference test removes a synthetic object,
+preserves the original and unpainted pixels, and reloads its lossless repair asset. Engine tests
+cover undo/redo, stale-job rejection, source binding, malformed/missing assets, explicit-original
+requirements and reopening local/embedded Photos recipes. The native Mac UI test paints a
+three-point stroke, exports a 1200×800 PNG, undoes/redoes and regenerates the repair. Across
+three exposure edits, the helper retains the same PID and its request count stays unchanged.
+The native Web view responds on the same session. Synthetic-only QA; no cleanup-quality parity
+or broad real-photo quality claim.
+
+The network sees a bounded 800×800 context crop. Fine detail, large removals, repeated patterns
+and complex boundaries can still need another stroke or manual Heal/Clone. There is no automatic
+object/distraction detection or guaranteed parity with Photos/Lightroom cleanup quality.
+
 ## Desktop Web view
 
 Launch the Mac bundle with `--web 8080 --web-bind 0.0.0.0` to expose its current session at

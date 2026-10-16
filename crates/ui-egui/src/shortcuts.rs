@@ -512,7 +512,15 @@ pub fn handle(app: &mut LightcraftApp, ctx: &egui::Context) {
             }
             // / refreshes the selected spot's source in the Remove tool (the filmstrip elsewhere)
             if f == "view.filmstrip" && app.ui.right == crate::state::RightPanel::Remove && app.session.active_spot.is_some() {
-                let _ = app.run("spot.refreshSource", json!({}));
+                let ai = app
+                    .session
+                    .active()
+                    .and_then(|id| app.session.develop_of(id))
+                    .and_then(|d| app.session.active_spot.and_then(|i| d.spots.get(i).map(|s| s.mode == lightcraft_develop::SpotMode::Ai)))
+                    .unwrap_or(false);
+                if let Err(e) = app.run(if ai { "spot.aiRegenerate" } else { "spot.refreshSource" }, json!({})) {
+                    app.toast(ctx, e);
+                }
                 continue;
             }
             // Shift+O cycles the mask overlay colour while masking (the crop overlay elsewhere)

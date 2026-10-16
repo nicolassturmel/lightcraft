@@ -1,0 +1,10 @@
+LaMa: Resolution-robust Large Mask Inpainting with Fourier Convolutions
+Authors: Roman Suvorov, Elizaveta Logacheva, Anton Mashikhin, Anastasia Remizova,
+Arsenii Ashukha, Aleksei Silvestrov, Naejin Kong, Harshith Goka, Kiwoong Park,
+Victor Lempitsky and contributors.
+Source: https://github.com/advimman/lama
+License: Apache-2.0 (LICENSE-lama.txt).
+Core ML conversion: john-rocky/CoreML-Models; distribution mlboydaisuke/LaMa-CoreML.
+https://huggingface.co/mlboydaisuke/LaMa-CoreML
+Pinned revision and SHA-256 checksums: packaging/models/apple-inpaint.json.
+No conversion or weight modifications by LightCraft. Compiled using Apple's public Core ML API.

@@ -127,6 +127,7 @@ printf 'APPL????' >"$APP/Contents/PkgInfo"
 mkdir -p "$APP/Contents/Resources/Licenses"
 copy_docs "$APP/Contents/Resources/Licenses"
 bash "$HERE/prepare-sky-model.sh" "$APP/Contents/Resources"
+bash "$HERE/prepare-inpaint-model.sh" "$APP/Contents/Resources"
 
 # Sign inside-out: nested code first, then the bundle itself (no --deep on the final signature).
 # Sign the PhotoKit/Core Image/Vision helper before the responsible application bundle.
@@ -178,6 +179,7 @@ cp "$WORK/bin/lightcraft-apple" "$CLI_DIR/"
 sign --options runtime "$CLI_DIR/lightcraft-apple"
 copy_docs "$CLI_DIR"
 bash "$HERE/prepare-sky-model.sh" "$CLI_DIR"
+bash "$HERE/prepare-inpaint-model.sh" "$CLI_DIR"
 sign --options runtime "$CLI_DIR/lightcraft-cli"
 codesign --verify --strict --verbose=2 "$CLI_DIR/lightcraft-cli"
 rm -f "$CLI_ZIP"

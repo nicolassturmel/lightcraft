@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod ai_remove;
 pub mod album_picker;
 pub mod apple_photos;
 pub mod control;
@@ -447,6 +448,9 @@ impl LightcraftApp {
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
         apple_photos::ui_allowed(self, id)?;
         if let Some(result) = apple_photos::intercept(self, id, &params) {
+            return result;
+        }
+        if let Some(result) = ai_remove::intercept(self, id, &params) {
             return result;
         }
         if let Some(result) = model_setup::intercept(self, id, &params) {

@@ -353,6 +353,7 @@ impl Session {
         self.total = None;
         self.library_generation = crate::LIBRARY_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.library_identity = Arc::new(());
+        self.media.ai_assets = Arc::new(crate::ai_remove::AiAssets::new(directory.as_ref().map(|d| d.join("AI Remove"))));
         self.apple_library = Some(Library { directory, ..Default::default() });
         self
     }
@@ -635,6 +636,7 @@ pub struct CopyJob {
     render: crate::export::PreparedExport,
     asset: String,
     recipe: Value,
+    ai_assets: Arc<crate::ai_remove::AiAssets>,
 }
 
 /// An explicit request for one original. Normal source refs never have network access.
@@ -719,11 +721,34 @@ pub fn prepare_copy(s: &mut Session, params: &Value) -> Result<CopyJob, String> 
     let recipe = json!({"schema":1, "originalAssetId":asset, "adjustments":Draft::of(photo)});
     let options = crate::export::ExportOptions { quality: 95, ..Default::default() };
     let render = crate::export::prepare_export(s, id, &options, 1)?;
-    Ok(CopyJob { render, asset, recipe })
+    Ok(CopyJob { render, asset, recipe, ai_assets: s.media.ai_assets.clone() })
 }
 
 impl CopyJob {
-    pub fn run(self) -> Result<Value, String> {
+    pub fn run(mut self) -> Result<Value, String> {
+        // Keep the edit-copy recipe self-contained, including repairs needed by undo/history.
+        let draft: Draft = serde_json::from_value(self.recipe["adjustments"].clone()).map_err(|e| e.to_string())?;
+        let mut repairs = std::collections::BTreeMap::new();
+        for settings in
+            std::iter::once(&draft.develop).chain(draft.history.iter().map(|h| &h.settings)).chain(draft.versions.iter().map(|v| &v.settings))
+        {
+            for patch in settings.spots.iter().filter_map(|s| s.ai_patch.as_ref()) {
+                if repairs.contains_key(&patch.id) {
+                    continue;
+                }
+                let bytes = self.ai_assets.export_asset(patch)?;
+                repairs.insert(patch.id.clone(), bytes);
+                if repairs.values().map(Vec::len).sum::<usize>() > 4_000_000 {
+                    return Err("AI Remove history is too large for a Photos recipe; export an image and keep the local adjustment folder".into());
+                }
+            }
+        }
+        if !repairs.is_empty() {
+            self.recipe["aiRemoveAssets"] = serde_json::to_value(repairs).map_err(|e| e.to_string())?;
+        }
+        if serde_json::to_vec(&self.recipe).map_err(|e| e.to_string())?.len() > 16_000_000 {
+            return Err("Photos copy recipe exceeds the size limit".into());
+        }
         let image = self.render.run()?;
         #[cfg(target_os = "macos")]
         return lightcraft_apple::save_photos_copy(&self.asset, &image.file_name, &image.bytes, &self.recipe);
@@ -756,6 +781,22 @@ pub fn apply_recipe(s: &mut Session, recipe: &Value) -> crate::Result<Value> {
     })?;
     let draft: Draft =
         serde_json::from_value(recipe.get("adjustments").cloned().unwrap_or(Value::Null)).map_err(|e| crate::EngineError::Other(e.to_string()))?;
+    if let Some(assets) = recipe.get("aiRemoveAssets") {
+        if serde_json::to_vec(assets).map_err(|e| crate::EngineError::Other(e.to_string()))?.len() > 16_000_000 {
+            return Err(crate::EngineError::Other("Oversized AI Remove recipe".into()));
+        }
+        let assets: std::collections::BTreeMap<String, Vec<u8>> =
+            serde_json::from_value(assets.clone()).map_err(|e| crate::EngineError::Other(e.to_string()))?;
+        if assets.len() > 256 {
+            return Err(crate::EngineError::Other("Too many AI Remove assets".into()));
+        }
+        for (id, bytes) in assets {
+            let patch = s.media.ai_assets.import_asset(&bytes).map_err(crate::EngineError::Other)?;
+            if patch.id != id {
+                return Err(crate::EngineError::Other("AI Remove asset identity mismatch".into()));
+            }
+        }
+    }
     s.commit(
         "Reopen Photos Adjustments",
         Op::Batch {
@@ -1054,6 +1095,54 @@ mod tests {
         s.apply_photos_snapshot(projected(&["a", "b"], None)).unwrap();
         s.selection = Selection::single(s.apple_library.as_ref().unwrap().asset_ids["a"]);
         s
+    }
+
+    #[test]
+    fn ai_repairs_reopen_from_local_photos_descriptions_and_embedded_copy_recipes() {
+        use lightcraft_develop::{AiPatch, Spot, SpotMode};
+        use lightcraft_geom::{Point, Rect};
+        use lightcraft_preview::{Hasher128, next_tick};
+        let dir = std::env::temp_dir().join(format!("lc-photos-ai-{}-{}", std::process::id(), next_tick()));
+        let mut s = Session::new().with_apple_photos(Some(dir.clone()));
+        s.apply_photos_snapshot(projected(&["a"], Some(&dir))).unwrap();
+        let id = s.apple_library.as_ref().unwrap().asset_ids["a"];
+        s.selection = Selection::single(id);
+        let key = Hasher128::new().str(&crate::media::content_key(s.catalog.photo(id).unwrap())).finish();
+        let patch = s
+            .media
+            .ai_assets
+            .store(
+                AiPatch {
+                    id: String::new(),
+                    model: "test".into(),
+                    source: key.to_string(),
+                    bounds: Rect::UNIT,
+                    width: 1,
+                    height: 1,
+                    stroke: vec![Point::new(0.5, 0.5)],
+                    radius: 0.02,
+                },
+                vec![[0.5, 0.3, 0.2, 1.0]],
+            )
+            .unwrap();
+        let mut dd = (*s.develop_of(id).unwrap()).clone();
+        dd.spots.push(Spot { mode: SpotMode::Ai, ai_patch: Some(patch.clone()), ..Default::default() });
+        s.set_develop(id, dd, "AI Remove").unwrap();
+        s.persist().unwrap();
+        let bytes = s.media.ai_assets.export_asset(&patch).unwrap();
+        let recipe =
+            json!({"schema":1,"originalAssetId":"a","adjustments":Draft::of(s.catalog.photo(id).unwrap()),"aiRemoveAssets":{patch.id.clone():bytes}});
+        let base = Arc::new(lightcraft_raster::Rgb32f::filled(8, 6, [0.1; 3]));
+        let mut reopened = Session::new().with_apple_photos(Some(dir.clone()));
+        reopened.apply_photos_snapshot(projected(&["a"], Some(&dir))).unwrap();
+        let d = reopened.develop_of(id).unwrap();
+        assert_eq!(reopened.media.ai_assets.composite(&base, &d.spots, Some(key)).unwrap().data[0], [0.5, 0.3, 0.2]);
+        let mut fresh = photos_session();
+        apply_recipe(&mut fresh, &recipe).unwrap();
+        let d = fresh.develop_of(id).unwrap();
+        assert_eq!(fresh.media.ai_assets.composite(&base, &d.spots, Some(key)).unwrap().data[0], [0.5, 0.3, 0.2]);
+        assert_eq!(base.data, vec![[0.1; 3]; 48]);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

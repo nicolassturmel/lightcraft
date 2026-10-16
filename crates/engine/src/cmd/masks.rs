@@ -726,6 +726,7 @@ pub fn specs() -> Vec<CommandSpec> {
                         feather: base.feather,
                         opacity: 100.0,
                         source_offset: None,
+                        ai_patch: None,
                     };
                     spot.source_offset = pick_source(s, id, &dd, &spot, None);
                     dd.spots.push(spot);
@@ -734,6 +735,24 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"spots": out, "added": found.len()}))
             }
         ),
+        cmd!(
+            "spot.aiRemove",
+            "AI Remove",
+            [],
+            None,
+            "{points: [[x,y],…], size?: fraction of long edge, opacity?: 0..100} — local Core ML inpainting",
+            has_active,
+            |s, p| {
+                let job = crate::ai_remove::Job::prepare(s, p, false).map_err(|e| bad("spot.aiRemove", e))?;
+                let result = job.run().map_err(|e| bad("spot.aiRemove", e))?;
+                job.accept(s, result)
+            }
+        ),
+        cmd!("spot.aiRegenerate", "Regenerate AI Remove", [], None, "{index?} — explicitly regenerate the selected repair", has_active, |s, p| {
+            let job = crate::ai_remove::Job::prepare(s, p, true).map_err(|e| bad("spot.aiRegenerate", e))?;
+            let result = job.run().map_err(|e| bad("spot.aiRegenerate", e))?;
+            job.accept(s, result)
+        }),
         cmd!(
             "spot.add",
             "Add Remove Spot",
@@ -744,6 +763,9 @@ pub fn specs() -> Vec<CommandSpec> {
             |s, p| {
                 let mode: SpotMode =
                     serde_json::from_value(p.get("mode").cloned().unwrap_or(json!("remove"))).map_err(|e| bad("spot.add", e.to_string()))?;
+                if mode == SpotMode::Ai {
+                    return Err(bad("spot.add", "Use spot.aiRemove to generate an AI repair"));
+                }
                 let pts: Vec<Point> = p
                     .get("points")
                     .and_then(Value::as_array)
@@ -760,6 +782,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     feather: f64_or(p, "feather", d.feather).clamp(0.0, 100.0),
                     opacity: f64_or(p, "opacity", d.opacity).clamp(0.0, 100.0),
                     source_offset: point(p, "source"),
+                    ai_patch: None,
                 };
                 let id = s.active().ok_or_else(|| bad("spot.add", "no active photo"))?;
                 let mut dd = (*s.develop_of(id).unwrap_or_default()).clone();
@@ -799,6 +822,12 @@ pub fn specs() -> Vec<CommandSpec> {
                 };
                 spots_edit(s, c, "Edit Spot", |spots| {
                     let sp = &mut spots[i];
+                    if mode == Some(SpotMode::Ai)
+                        || (sp.mode == SpotMode::Ai
+                            && ["move", "source", "moveSource", "size", "feather", "mode"].iter().any(|k| p.get(*k).is_some()))
+                    {
+                        return Err(bad(c, "AI repairs have fixed geometry; use Regenerate, or delete and paint a new area"));
+                    }
                     if let Some(d) = point(p, "move") {
                         sp.points.iter_mut().for_each(|q| *q = Point::new(q.x + d.x, q.y + d.y));
                         // the source moves along (its offset is relative to the target)
@@ -840,6 +869,9 @@ pub fn specs() -> Vec<CommandSpec> {
                 let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
                 let dd = (*s.develop_of(id).unwrap_or_default()).clone();
                 let spot = dd.spots[i].clone();
+                if spot.mode == SpotMode::Ai {
+                    return Err(bad(c, "Use spot.aiRegenerate for an AI repair"));
+                }
                 let next = pick_source(s, id, &dd, &spot, spot.source_offset).ok_or_else(|| bad(c, "no other source fits in the photo"))?;
                 spots_edit(s, c, "Refresh Source", |spots| {
                     spots[i].source_offset = Some(next);

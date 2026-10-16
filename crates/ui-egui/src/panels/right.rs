@@ -343,12 +343,22 @@ fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     header(ui, "Remove");
     padded(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
-            for (label, tool) in [("Remove", "remove"), ("Heal", "heal"), ("Clone", "clone")] {
+            for (label, tool) in [("AI Remove", "aiRemove"), ("Remove", "remove"), ("Heal", "heal"), ("Clone", "clone")] {
                 if text_button(ui, &format!("removeMode-{tool}"), label, app.ui.tool == tool).clicked() {
                     app.ui.tool = tool.into();
+                    app.session.active_spot = None;
                 }
             }
         });
+        if app.ui.tool == "aiRemove" {
+            ui.label(crate::i18n::tr("Paint over an object. AI fills the area locally on this Mac."));
+            if app.tasks.is_running("Removing with AI") {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(crate::i18n::tr("Removing with AI"));
+                });
+            }
+        }
         ui.add_space(8.0);
         ui.label(crate::i18n::tr_format!("{} spot(s) on this photo", d.spots.len()));
         ui.add_space(4.0);
@@ -383,6 +393,7 @@ fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             lightcraft_develop::SpotMode::Heal => "Heal",
             lightcraft_develop::SpotMode::Clone => "Clone",
             lightcraft_develop::SpotMode::Remove => "Remove",
+            lightcraft_develop::SpotMode::Ai => "AI Remove",
         };
         super::edit::sub_title(ui, &crate::i18n::tr_format!("{mode} spot {} of {}", i + 1, d.spots.len(), mode = mode));
     }
@@ -403,6 +414,12 @@ fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         (plain("ui.removeOpacity", "Opacity", 0.0, 100.0, 100.0), "opacity", app.ui.remove_opacity as f64),
     ];
     for (spec, key, v) in sliders {
+        if key == "feather" && sel.is_none() && app.ui.tool == "aiRemove" {
+            continue;
+        }
+        if key != "opacity" && sel.as_ref().is_some_and(|(_, s)| s.mode == lightcraft_develop::SpotMode::Ai) {
+            continue;
+        }
         let out = slider(ui, &spec, v, true, None);
         let scale = if key == "size" { 1000.0 } else { 1.0 };
         if let Some(v) = out.value {
@@ -419,8 +436,11 @@ fn remove(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     if sel.is_some() {
         padded(ui, |ui| {
             ui.horizontal(|ui| {
-                if text_button(ui, "spotRefresh", crate::i18n::tr("Refresh Source (/)"), false).clicked() {
-                    let _ = app.run("spot.refreshSource", json!({}));
+                let ai = sel.as_ref().is_some_and(|(_, s)| s.mode == lightcraft_develop::SpotMode::Ai);
+                if text_button(ui, "spotRefresh", crate::i18n::tr(if ai { "Regenerate" } else { "Refresh Source (/)" }), false).clicked()
+                    && let Err(e) = app.run(if ai { "spot.aiRegenerate" } else { "spot.refreshSource" }, json!({}))
+                {
+                    app.toast(ui.ctx(), e);
                 }
                 if text_button(ui, "spotDelete", crate::i18n::tr("Delete (⌫)"), false).clicked() {
                     let _ = app.run("spot.delete", json!({}));

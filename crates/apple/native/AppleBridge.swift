@@ -44,6 +44,7 @@ struct Request: Decodable {
     var exclude: [[Double]]?
     var allowEmpty: Bool?
     var model: String?
+    var mask: String?
 }
 
 func required(_ value: String?, _ name: String) throws -> String {
@@ -733,6 +734,87 @@ func semanticSkyMask(_ request: Request) throws -> [String: Any] {
     return ["side": side, "provider": "Apple Vision / Core ML", "model": "DETR-ResNet50-F16P8", "category": "sky"]
 }
 
+// The shared worker serializes requests; keep the compiled inpainting network loaded across strokes.
+final class InpaintModel {
+    static let shared = InpaintModel()
+    private var loaded: (String, MLModel)?
+    func model(at path: String) throws -> MLModel {
+        if let (old, model) = loaded, old == path { return model }
+        let configuration = MLModelConfiguration()
+        configuration.computeUnits = .all
+        let model = try MLModel(contentsOf: URL(fileURLWithPath: path), configuration: configuration)
+        guard model.modelDescription.inputDescriptionsByName["image"]?.imageConstraint?.pixelsWide == 800,
+              model.modelDescription.inputDescriptionsByName["mask"]?.imageConstraint?.pixelsHigh == 800,
+              model.modelDescription.outputDescriptionsByName["output"]?.type == .image else {
+            throw BridgeError("Unsupported AI Remove model interface")
+        }
+        loaded = (path, model)
+        return model
+    }
+}
+
+func inpaintBuffer(_ data: Data, grayscale: Bool) throws -> CVPixelBuffer {
+    let side = 800, channels = grayscale ? 1 : 4
+    guard data.count == side * side * channels else { throw BridgeError("Invalid AI Remove pixel count") }
+    var buffer: CVPixelBuffer?
+    let format = grayscale ? kCVPixelFormatType_OneComponent8 : kCVPixelFormatType_32BGRA
+    guard CVPixelBufferCreate(kCFAllocatorDefault, side, side, format,
+        [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &buffer) == kCVReturnSuccess, let buffer else {
+        throw BridgeError("Cannot allocate AI Remove input")
+    }
+    guard CVPixelBufferLockBaseAddress(buffer, []) == kCVReturnSuccess else { throw BridgeError("Cannot lock AI Remove input") }
+    defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+    guard let base = CVPixelBufferGetBaseAddress(buffer) else { throw BridgeError("Missing AI Remove input storage") }
+    let stride = CVPixelBufferGetBytesPerRow(buffer)
+    guard stride >= side * channels else { throw BridgeError("Invalid AI Remove input stride") }
+    let bytes = base.assumingMemoryBound(to: UInt8.self)
+    for y in 0..<side {
+        for x in 0..<side {
+            let src = (y * side + x) * channels, dest = y * stride + x * channels
+            if grayscale { bytes[dest] = data[src] }
+            else {
+                bytes[dest] = data[src + 2]; bytes[dest + 1] = data[src + 1]
+                bytes[dest + 2] = data[src]; bytes[dest + 3] = 255
+            }
+        }
+    }
+    return buffer
+}
+
+func inpaint(_ request: Request) throws -> [String: Any] {
+    let imageURL = URL(fileURLWithPath: try required(request.path, "path"))
+    let maskURL = URL(fileURLWithPath: try required(request.mask, "mask"))
+    let outputURL = URL(fileURLWithPath: try required(request.output, "output"))
+    guard try imageURL.resourceValues(forKeys: [.fileSizeKey]).fileSize == 800 * 800 * 4,
+          try maskURL.resourceValues(forKeys: [.fileSizeKey]).fileSize == 800 * 800 else {
+        throw BridgeError("Invalid AI Remove file sizes")
+    }
+    let image = try inpaintBuffer(Data(contentsOf: imageURL), grayscale: false)
+    let mask = try inpaintBuffer(Data(contentsOf: maskURL), grayscale: true)
+    let model = try InpaintModel.shared.model(at: required(request.model, "model"))
+    let prediction = try model.prediction(from: MLDictionaryFeatureProvider(dictionary: [
+        "image": MLFeatureValue(pixelBuffer: image), "mask": MLFeatureValue(pixelBuffer: mask)]))
+    guard let result = prediction.featureValue(for: "output")?.imageBufferValue,
+          CVPixelBufferGetWidth(result) == 800, CVPixelBufferGetHeight(result) == 800,
+          CVPixelBufferGetPixelFormatType(result) == kCVPixelFormatType_32BGRA,
+          CVPixelBufferLockBaseAddress(result, .readOnly) == kCVReturnSuccess else {
+        throw BridgeError("Invalid AI Remove model output")
+    }
+    defer { CVPixelBufferUnlockBaseAddress(result, .readOnly) }
+    guard let base = CVPixelBufferGetBaseAddress(result), CVPixelBufferGetBytesPerRow(result) >= 3200 else {
+        throw BridgeError("Invalid AI Remove output storage")
+    }
+    let bytes = base.assumingMemoryBound(to: UInt8.self), stride = CVPixelBufferGetBytesPerRow(result)
+    var rgba = Data(count: 800 * 800 * 4)
+    for y in 0..<800 { for x in 0..<800 {
+        let src = y * stride + x * 4, dest = (y * 800 + x) * 4
+        rgba[dest] = bytes[src + 2]; rgba[dest + 1] = bytes[src + 1]
+        rgba[dest + 2] = bytes[src]; rgba[dest + 3] = 255
+    } }
+    try rgba.write(to: outputURL, options: .atomic)
+    return ["width":800, "height":800, "provider":"Core ML", "model":"LaMa"]
+}
+
 func perform(_ request: Request) async throws -> [String: Any] {
     let result: [String: Any]
     switch request.operation {
@@ -757,6 +839,8 @@ func perform(_ request: Request) async throws -> [String: Any] {
     case "vision-mask":
         guard #available(macOS 14.0, *) else { throw BridgeError("Apple Vision foreground masks require macOS 14 or later") }
         result = try autoreleasepool { try foregroundMask(request) }
+    case "image-inpaint":
+        result = try autoreleasepool { try inpaint(request) }
     case "vision-sky-mask":
         guard #available(macOS 14.0, *) else { throw BridgeError("Apple semantic sky masks require macOS 14 or later") }
         result = try autoreleasepool { try semanticSkyMask(request) }

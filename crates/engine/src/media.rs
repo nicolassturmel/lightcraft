@@ -62,7 +62,7 @@ impl SettingsHashes {
 }
 
 /// Bump when the pipeline's output changes, to invalidate cached thumbnails.
-pub const RENDER_CACHE_VERSION: u64 = 50;
+pub const RENDER_CACHE_VERSION: u64 = 51;
 
 /// Thumbnails render at one of these long edges (so window/cell size changes reuse the cache).
 pub const THUMB_SIZES: [usize; 4] = [128, 256, 384, 512];
@@ -346,6 +346,7 @@ pub struct MediaCache {
     photos_preview_gate: Arc<std::sync::Mutex<PhotosPreviewGate>>,
     photos_preview_epoch: Arc<std::sync::atomic::AtomicU64>,
     pub photos_originals: Option<Arc<crate::apple::OriginalCache>>,
+    pub ai_assets: Arc<crate::ai_remove::AiAssets>,
     /// Which photos have a cached denoised picture, and how to read it.
     pub denoise: DenoiseIndex,
 }
@@ -417,6 +418,7 @@ impl Default for MediaCache {
             photos_preview_gate: Default::default(),
             photos_preview_epoch: Default::default(),
             photos_originals: None,
+            ai_assets: Default::default(),
             denoise: DenoiseIndex::default(),
         }
     }
@@ -456,6 +458,7 @@ impl MediaCache {
         self.thumbs = Lru::new(THUMB_SOURCE_BYTES.min(self.budget));
         self.previews.clear();
         self.full = None;
+        self.ai_assets.clear_memory();
     }
 
     /// Bytes the caches may hold together.
@@ -474,7 +477,7 @@ impl MediaCache {
     /// Bytes held by decoded sources and rendered previews in memory.
     pub fn held(&self) -> usize {
         let (t, p, f) = self.usage();
-        t.bytes + p.bytes + f.bytes + self.rendered.mem_usage().1
+        t.bytes + p.bytes + f.bytes + self.rendered.mem_usage().1 + self.ai_assets.usage().bytes
     }
 
     /// Evict least recently used entries across the source caches and the rendered previews
@@ -489,13 +492,15 @@ impl MediaCache {
                 self.previews.iter().filter(|e| Some(e.2) != newest_preview).map(|e| e.2).min().map(|t| (t, 1)),
                 self.full.as_ref().map(|e| (e.2, 2)),
                 self.rendered.oldest_tick().map(|t| (t, 3)),
+                self.ai_assets.oldest_tick().map(|t| (t, 4)),
             ];
             let Some((tick, which)) = candidates.into_iter().flatten().min() else { break };
             let freed = match which {
                 0 => self.thumbs.pop_oldest(),
                 1 => self.previews.iter().position(|e| e.2 == tick).map(|i| self.previews.remove(i).1.bytes()),
                 2 => self.full.take().map(|e| e.1.bytes()),
-                _ => self.rendered.evict_oldest(),
+                3 => self.rendered.evict_oldest(),
+                _ => self.ai_assets.evict_oldest(),
             };
             match freed {
                 Some(b) if b > 0 => held = held.saturating_sub(b),
@@ -718,6 +723,7 @@ pub struct RenderJob {
     pub view_cache: Option<(Arc<PreviewCache>, Hash128)>,
     /// Render for this monitor profile ([`Self::with_display`]).
     pub display: Option<Arc<crate::display::Display>>,
+    pub ai_assets: Arc<crate::ai_remove::AiAssets>,
 }
 
 pub struct RenderResult {
@@ -820,12 +826,17 @@ impl RenderJob {
         let closing = || lightcraft_gpu::shutting_down().then(|| "LightCraft is closing".to_string());
         let source = match closing() {
             Some(e) => Err(e),
-            None => self.source.load_source().and_then(|s| closing().map_or(Ok(s), Err)),
+            None => self.source.load_source().and_then(|s| {
+                if let Some(e) = closing() {
+                    return Err(e);
+                }
+                let base = s.image_for(self.settings.denoise_amount());
+                self.ai_assets.composite(&base, &self.settings.spots, self.source_key).map(|image| (s, image))
+            }),
         };
         match source {
-            Ok(source) => {
-                // the plain picture, or (Denoise amount above 0 and a denoised picture cached) the mix the amount asks for
-                let src = &source.image_for(self.settings.denoise_amount());
+            Ok((source, image)) => {
+                let src = &image;
                 let info = source.info_or(self.info);
                 // Thumbnails (many small jobs side by side) stay on the CPU; views and exports use
                 // the GPU when there is one.
@@ -1135,6 +1146,7 @@ impl crate::Session {
             stages: None,
             view_cache: None,
             display: None,
+            ai_assets: self.media.ai_assets.clone(),
         })
     }
 
@@ -1186,6 +1198,7 @@ impl crate::Session {
             stages: None,
             view_cache: None,
             display: None,
+            ai_assets: self.media.ai_assets.clone(),
         })
     }
 
@@ -1232,6 +1245,7 @@ impl crate::Session {
             stages: None,
             view_cache: None,
             display: None,
+            ai_assets: self.media.ai_assets.clone(),
         })
     }
 

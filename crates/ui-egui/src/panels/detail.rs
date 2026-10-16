@@ -727,7 +727,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
         match right {
             RightPanel::Crop => crop_overlay(app, ui, &resp, &map, &frame, &d, id),
             RightPanel::Masking => mask_overlay(app, ui, &resp, &map, &d),
-            RightPanel::Remove => remove_overlay(app, ui, &resp, &map, &d),
+            RightPanel::Remove => remove_overlay(app, ui, &resp, &map, &frame, &d),
             RightPanel::RedEye => eye_overlay(app, ui, &resp, &map, &d),
             _ => {
                 // side by side / stacked: Before shows the same frame, so a click in its view (white
@@ -1887,24 +1887,25 @@ fn pin(p: &egui::Painter, c: Pos2, sel: bool) {
 
 /// The Remove tool on the photo: every spot's outline and pin (the selected one with its source),
 /// click a pin to select its spot, drag a target or source to move it, paint elsewhere to add one.
-fn remove_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::Response, map: &CanvasMap, d: &DevelopSettings) {
-    let long = (map.rect.width().max(map.rect.height())) as f64;
+fn remove_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::Response, map: &CanvasMap, frame: &Frame, d: &DevelopSettings) {
+    let long = frame.px_per_long((map.rect.width() * map.k).round().max(1.0) as usize) / map.k as f64;
     let p = ui.painter_at(app.canvas_rect.unwrap_or(map.rect));
     let active = app.session.active_spot.filter(|i| *i < d.spots.len());
     // (spot, is source, screen centre, radius) of everything that can be grabbed
     let mut grips: Vec<(usize, bool, Pos2, f32)> = Vec::new();
     for (i, s) in d.spots.iter().enumerate() {
+        let points = s.ai_patch.as_ref().map(|p| lightcraft_engine::ai_remove::display_stroke(p, frame)).unwrap_or_else(|| s.points.clone());
         let r = (s.size * long) as f32;
         let sel = Some(i) == active;
         let col = Color32::from_white_alpha(if sel { 230 } else { 150 });
-        for q in &s.points {
+        for q in &points {
             p.circle_stroke(map.screen(*q), r, Stroke::new(if sel { 1.5 } else { 1.0 }, col));
         }
-        let Some(&t) = s.points.first() else { continue };
+        let Some(&t) = points.first() else { continue };
         let tq = map.screen(t);
         if let Some(o) = s.source_offset.filter(|_| sel) {
             let sq = map.screen(Point::new(t.x + o.x, t.y + o.y));
-            for q in &s.points {
+            for q in &points {
                 p.circle_stroke(map.screen(Point::new(q.x + o.x, q.y + o.y)), r, Stroke::new(1.0, Color32::from_white_alpha(170)));
             }
             let dir = (tq - sq).normalized();
@@ -1934,7 +1935,9 @@ fn remove_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::Respo
         } else {
             ui.ctx().set_cursor_icon(egui::CursorIcon::None);
             p.circle_stroke(h, r, Stroke::new(1.0, Color32::WHITE));
-            p.circle_stroke(h, r * (1.0 - app.ui.remove_feather / 100.0).max(0.05), Stroke::new(1.0, Color32::from_white_alpha(110)));
+            if app.ui.tool != "aiRemove" {
+                p.circle_stroke(h, r * (1.0 - app.ui.remove_feather / 100.0).max(0.05), Stroke::new(1.0, Color32::from_white_alpha(110)));
+            }
         }
     }
     let press = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos());
@@ -1943,6 +1946,9 @@ fn remove_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::Respo
     {
         if Some(spot) != active {
             let _ = app.run("spot.select", json!({"index": spot}));
+        }
+        if d.spots.get(spot).is_some_and(|s| s.mode == lightcraft_develop::SpotMode::Ai) {
+            return;
         }
         let _ = app.run("develop.beginInteraction", json!({"label": "Edit Spot"}));
         app.gesture = Some(Gesture::SpotMove { spot, source });
@@ -1992,10 +1998,12 @@ fn remove_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::Respo
             _ => "remove",
         };
         let pts: Vec<[f64; 2]> = points.iter().map(|q| [q.x, q.y]).collect();
-        let _ = app.run(
-            "spot.add",
+        if let Err(e) = app.run(
+            if app.ui.tool == "aiRemove" { "spot.aiRemove" } else { "spot.add" },
             json!({"mode": mode, "points": pts, "size": app.ui.remove_size, "feather": app.ui.remove_feather, "opacity": app.ui.remove_opacity}),
-        );
+        ) {
+            app.toast(ui.ctx(), e);
+        }
     }
 }
 
