@@ -372,7 +372,11 @@ impl NativeMenu {
             }
             if let Some(it) = self.items.get(&key) {
                 let (cmd, params) = (it.cmd.clone(), it.params.clone());
-                let _ = lightcraft_ui_egui::menubar::run_item(app, &cmd, params);
+                if let Err(error) = lightcraft_ui_egui::menubar::run_item(app, &cmd, params)
+                    && cmd == "photo.saveApplePhotosCopy"
+                {
+                    app.toast_error(ctx, error);
+                }
             }
         }
         let bar = menu_bar(app);

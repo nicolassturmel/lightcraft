@@ -1,6 +1,6 @@
 # Target-app parity: LightCraft vs Adobe Lightroom
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (AI default and repair-overlay cleanup; scores unchanged) · **Target:** Adobe Lightroom Classic 15.5 (August 2026) and Lightroom 9.6 (desktop)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (direct Photos JPEG export menus and checklist recount; readiness unchanged) · **Target:** Adobe Lightroom Classic 15.5 (August 2026) and Lightroom 9.6 (desktop)
 
 The authoritative assessment of how close LightCraft is to Lightroom. The row-by-row checklist is
 [parity-checklist.md](parity-checklist.md); the ranked work list is [gaps.md](gaps.md); deep areas
@@ -12,7 +12,7 @@ have their own documents: [raw-parity.md](raw-parity.md), [file-format-parity.md
 
 | Number | Value | Kind |
 |---|---:|---|
-| **Feature breadth**, checklist | **81.1%** of 519 in-scope rows (P0 98.0%, P1 94.8%, P2 47.2%) | **measured**: recount of [parity-checklist.md](parity-checklist.md) rows (✅ 1, 🟡 ½, 🚫 left out), the same rule `cargo xtask parity` uses |
+| **Feature breadth**, checklist | **81.2%** of 519 in-scope rows (P0 98.0%, P1 94.8%, P2 47.5%) | **measured**: recount of [parity-checklist.md](parity-checklist.md) rows (✅ 1, 🟡 ½, 🚫 left out), the same rule `cargo xtask parity` uses |
 | **Feature breadth**, weighted by use | **~77%** | estimated: feature-area table below |
 | **Ready for real work** (full target) | **~61%** (range 56–66%) | estimated: weighted sum over the dimensions with written weights, see [below](#ready-for-real-work-mainstream-practitioner-and-essentials-user) |
 | **Mainstream practitioner** | **~49%** (range 44–54%) | estimated: weekly areas of a working photographer, depth 71.8% × 0.804 × colour 0.85 |
@@ -46,7 +46,7 @@ phase #85, duplicate Local entries #22, black GPU exports on an Intel iGPU #78).
 
 | Dimension | Breadth | Ready for real work | Remaining | Doc |
 |---|---:|---:|---:|---|
-| Features (weighted areas below) | ~77% (checklist 81.1%, measured) | ~61% | 600–1,100 h | [Features](#features) |
+| Features (weighted areas below) | ~77% (checklist 81.2%, measured) | ~61% | 600–1,100 h | [Features](#features) |
 | ↳ RAW cameras, colour and lens profiles (part of features) | 81% of Adobe's 1,446 models decode (16% verified), measured | ~56% | 255–480 h | [raw-parity.md](raw-parity.md) |
 | UI/UX fidelity | ~85% | ~70% | 40–70 h | [ui-parity.md](ui-parity.md) |
 | File formats (non-raw: images, sidecars, presets, catalogs) | ~85% | ~70% | 30–55 h | [file-format-parity.md](file-format-parity.md) |
@@ -74,7 +74,7 @@ from the checklist sections and the deep-dive documents.
 | Masking | 8% | 67% | 45% | 60–110 h | checklist K 67.4%; AI masks heuristic or SAM 3 without mirror |
 | Remove, heal, Enhance (denoise, Raw Details, Super Resolution, Lens Blur) | 7% | 45% | 30% | 70–130 h | checklist I 75%, P 0% |
 | Presets, profiles, versions, history, sync | 5% | 95% | 85% | 8–15 h | |
-| Export | 6% | 89% | 75% | 15–30 h | checklist S 88.9% |
+| Export | 6% | 92% | 75% | 15–30 h | checklist S 91.7% |
 | Merge and HDR | 3% | 85% | 60% | 20–35 h | merge 100%, HDR 70% (no HDR display) |
 | Views, compare, zoom, culling | 5% | 90% | 70% | 15–30 h | zoom detail P0 gap |
 | Classic output modules (Map, Book, Slideshow, Print, Web, publish, tethering) | 4% | 15% | 10% | 90–150 h | Classic extras 48% counts many small keys; the modules themselves are mostly ⬜ |
@@ -297,6 +297,7 @@ P2 items 12–25 h; look tuning, performance, packaging, hardening 25–45 h.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | minor | APPLE.13: File and photo-context export to Photos > LightCraft, full-size quality-100 JPEG; system-library row partial for Mac-only support. Checklist recounted, readiness unchanged. |
 | 2026-10-16 | minor | APPLE.12: Mac Remove defaults to AI; successful repairs hide contours/pins, with an explicit reveal command for reselection. Quality/detection limits and scores unchanged. |
 | 2026-10-16 | minor | APPLE.11: local LaMa/Core ML AI Remove, durable source-bound repair assets, common preview/export engine, regeneration and undo/redo. Manual 800×800 context is not broad cleanup-quality parity. Checklist recounted (519 in-scope rows, P1 94.8%, P2 47.2%); readiness estimates unchanged. |
 | 2026-10-15 | minor | APPLE.10: one persistent Apple RPC worker; Photos browsing pixels cached by source/revision across edits/sizes; genuine originals reused for renders with lossless disk backing for exports after RAM eviction/restart; obsolete filmstrip work cancelled. Scores unchanged. |

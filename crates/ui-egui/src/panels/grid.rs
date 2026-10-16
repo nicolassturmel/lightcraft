@@ -909,6 +909,19 @@ pub fn context_menu(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     if ui.button(crate::i18n::tr("Set as Reference Photo")).clicked() {
         let _ = app.run("photo.setReference", json!({"id": id.0}));
     }
+    if cfg!(target_os = "macos") && app.session.apple_library.is_some() {
+        let button = ui
+            .add_enabled(crate::apple_photos::can_save_copy(app, id), egui::Button::new(crate::i18n::tr("Export to Apple Photos (JPEG)")))
+            .on_hover_text(crate::i18n::tr("Full-size JPEG · Quality 100 · Photos > LightCraft"));
+        register(ui.ctx(), "context:photo.saveApplePhotosCopy", button.rect);
+        if button.clicked() {
+            // The clicked photo can be selected without being the active photo in a group.
+            if let Err(error) = app.run("photo.saveApplePhotosCopy", json!({"id": id.0})) {
+                app.toast_error(ui.ctx(), error);
+            }
+            ui.close();
+        }
+    }
     ui.separator();
     ui.menu_button(crate::i18n::tr("Set Rating"), |ui| {
         for r in 0..=5 {

@@ -1454,6 +1454,14 @@ impl crate::Session {
         depth: lightcraft_pipeline::OutputDepth,
     ) -> Result<RenderJob, String> {
         let mut job = self.render_job(id, max_w, max_h, false, true).ok_or("no such photo")?;
+        if matches!(job.origin, Source::ApplePhotos { .. }) {
+            // A small export must not reuse a browsing thumbnail. PhotoKit originals remain
+            // explicit downloads; source_ref only uses the retained original or reports it missing.
+            let photo = self.catalog.photo(id).ok_or("no such photo")?;
+            job.source = self.media.source_ref(photo, SourceLevel::Full);
+            job.key ^= ((job.level as u64) ^ (SourceLevel::Full as u64)) << 60;
+            job.level = SourceLevel::Full;
+        }
         // An export is made from the denoised picture its Denoise amount asks for, made when the job runs if the
         // background queue has not got to it. (A source kept in memory may lack the picture, so the job reads the file.)
         if let Some(wanted) = self.denoise_for_export(id, &job.settings)? {

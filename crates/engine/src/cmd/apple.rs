@@ -42,10 +42,10 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(
             "photo.saveApplePhotosCopy",
-            "Save Edited Copy to Photos",
+            "Export to Apple Photos (JPEG)",
             ["File"],
             Some("Cmd+S"),
-            "{id?:active} → create a full-size JPEG in the Photos album LightCraft, with adjustment metadata attached to the copy; never edit the original",
+            "{id?:active} → export a full-size JPEG at quality 100 in the Photos album LightCraft, with adjustment metadata attached to the copy; never edit the original",
             crate::apple::has_photo,
             |s, p| { crate::apple::prepare_copy(s, p).and_then(|job| job.run()).map_err(crate::EngineError::Other) }
         ),

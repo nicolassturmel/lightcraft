@@ -1899,6 +1899,8 @@
   "Click a foreground object · ⌥-click excludes an object": "Cliquez sur un objet au premier plan · ⌥-clic exclut un objet",
   "Text selection is unavailable with Apple Vision. Select objects by clicking the photo.": "La sélection par texte est indisponible avec Apple Vision. Sélectionnez les objets en cliquant sur la photo.",
   "AI Remove": "Suppression IA",
+  "Export to Apple Photos (JPEG)": "Exporter vers Photos Apple (JPEG)",
+  "Full-size JPEG · Quality 100 · Photos > LightCraft": "JPEG pleine taille · Qualité 100 · Photos > LightCraft",
   "Show Remove Edits": "Afficher les retouches",
   "AI removal applied": "Suppression IA appliquée",
   "Removing with AI": "Suppression IA en cours",

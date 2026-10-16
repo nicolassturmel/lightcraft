@@ -719,7 +719,8 @@ pub fn prepare_copy(s: &mut Session, params: &Value) -> Result<CopyJob, String> 
     };
     let asset = asset.clone();
     let recipe = json!({"schema":1, "originalAssetId":asset, "adjustments":Draft::of(photo)});
-    let options = crate::export::ExportOptions { quality: 95, ..Default::default() };
+    let options =
+        crate::export::ExportOptions { format: crate::export::ExportFormat::Jpeg, quality: 100, resize: None, limit_kb: None, ..Default::default() };
     let render = crate::export::prepare_export(s, id, &options, 1)?;
     Ok(CopyJob { render, asset, recipe, ai_assets: s.media.ai_assets.clone() })
 }
@@ -1525,9 +1526,12 @@ mod tests {
         let mut s = photos_session();
         let id = s.active().unwrap();
         let image = lightcraft_raster::Rgb32f { width: 8, height: 6, data: vec![[0.1, 0.2, 0.3]; 48] };
-        for level in [SourceLevel::Thumb, SourceLevel::Preview, SourceLevel::Full] {
-            s.media.insert(id, level, Arc::new(image.clone()));
+        for (level, edge) in [(SourceLevel::Thumb, 1), (SourceLevel::Preview, 2), (SourceLevel::Full, 8)] {
+            let pixels = lightcraft_raster::resample::fit(&image, edge, edge, lightcraft_raster::resample::Filter::Box);
+            s.media.insert(id, level, Arc::new(pixels));
         }
+        // This direct export must not inherit a reduced-size/low-quality disk-export preset.
+        s.last_export = Some(json!({"format":"png", "width":1, "quality":1}));
         s.execute("develop.set", &json!({"control":"light.exposure", "value":1.0})).unwrap();
         let original = s.catalog.photo(id).unwrap().source.clone();
         let check = s.export_job(id, 8, 6, lightcraft_pipeline::OutputSpace::Srgb, lightcraft_pipeline::OutputDepth::U8).unwrap();
@@ -1540,7 +1544,15 @@ mod tests {
         let rendered = job.render.run().unwrap();
         assert_eq!((rendered.width, rendered.height), (8, 6));
         assert!(rendered.bytes.starts_with(&[0xff, 0xd8]));
+        assert!(rendered.file_name.ends_with(".jpg"));
+        let table = rendered.bytes.windows(5).position(|v| v == [0xff, 0xdb, 0x00, 0x43, 0x00]).expect("8-bit JPEG luminance table");
+        assert!(rendered.bytes[table + 5..table + 69].iter().all(|q| *q == 1), "quality 100 uses unit quantization, rather than the old quality 95");
         assert_eq!(s.catalog.photo(id).unwrap().source, original);
+        let other = s.apple_library.as_ref().unwrap().asset_ids["b"];
+        s.media.insert(other, SourceLevel::Full, Arc::new(image));
+        let targeted = prepare_copy(&mut s, &json!({"id":other.0})).unwrap();
+        assert_eq!(targeted.asset, "b", "a context-menu export targets the clicked photo, not the active one");
+        assert_eq!(s.active(), Some(id));
         assert!(lightcraft_apple::save_photos_copy("another", "copy.jpg", &rendered.bytes, &recipe).is_err());
         let before = s.catalog.len();
         apply_recipe(&mut s, &recipe).unwrap();

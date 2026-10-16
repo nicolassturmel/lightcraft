@@ -80,6 +80,7 @@ const LAYOUT: &[(&str, &[&str])] = &[
             "file.importKeywords",
             "file.exportKeywords",
             "---",
+            "photo.saveApplePhotosCopy",
             "dialog.export",
             "app.exportPrevious",
             "@Export with Preset",
@@ -276,6 +277,7 @@ fn host_supports(app: &LightcraftApp, id: &str) -> bool {
     match id {
         "file.backupLibrary" => app.services.backup_library.is_some(),
         "file.restoreLibrary" => app.services.restore_library.is_some(),
+        "photo.saveApplePhotosCopy" => cfg!(target_os = "macos"),
         "photo.restore" | "photo.deletePermanently" => selection_deleted(app),
         "photo.delete" => !selection_deleted(app),
         // only where the trash is on screen
@@ -800,7 +802,7 @@ pub fn show_in_window(app: &mut LightcraftApp, ui: &mut egui::Ui, max_width: f32
         let r = run_item(app, &id, params);
         // an export that can't start (e.g. no folder) says why instead of doing nothing
         if let Err(e) = r
-            && matches!(id.as_str(), "app.export" | "app.exportPrevious")
+            && matches!(id.as_str(), "app.export" | "app.exportPrevious" | "photo.saveApplePhotosCopy")
         {
             app.toast(ui.ctx(), e);
         }

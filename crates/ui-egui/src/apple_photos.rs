@@ -165,6 +165,12 @@ fn finish_update(app: &mut LightcraftApp, ctx: &egui::Context, result: Result<li
     }
 }
 
+pub(crate) fn can_save_copy(app: &LightcraftApp, id: PhotoId) -> bool {
+    lightcraft_engine::apple::primary(&app.session).is_ok()
+        && app.session.catalog.photo(id).is_some_and(|p| matches!(p.source, lightcraft_engine::catalog::Source::ApplePhotos { .. }))
+        && !app.tasks.is_running(SAVE)
+}
+
 fn start_copy(app: &mut LightcraftApp, params: &Value) -> Result<Value, String> {
     if app.tasks.is_running(SAVE) {
         return Err("A Photos copy is already being saved".into());
@@ -544,8 +550,8 @@ pub fn sidebar(app: &mut LightcraftApp, ui: &mut egui::Ui) {
         download_button(app, ui, id, None, "selected");
     }
     ui.small(crate::i18n::tr("Photos previews only. Download each original when needed."));
-    let can_save = app.session.active().is_some() && !app.tasks.is_running(SAVE);
-    let button = ui.add_enabled(can_save, egui::Button::new("Save edited copy to Photos"));
+    let can_save = app.session.active().is_some_and(|id| can_save_copy(app, id));
+    let button = ui.add_enabled(can_save, egui::Button::new(crate::i18n::tr("Export to Apple Photos (JPEG)")));
     crate::widgets::register(ui.ctx(), "button:photosSaveCopy", button.rect);
     if button.clicked()
         && let Err(error) = app.run("photo.saveApplePhotosCopy", json!({}))
@@ -583,6 +589,31 @@ mod tests {
             }))
             .unwrap(),
         )
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn direct_photos_export_is_in_the_export_group_and_photo_context_menu() {
+        let mut session = lightcraft_engine::Session::new().with_apple_photos(None);
+        session.apply_photos_snapshot(metadata()).unwrap();
+        let id = session.catalog.photos().next().unwrap().id;
+        session.execute("library.select", &json!({"ids":[id.0]})).unwrap();
+        let mut app = LightcraftApp::new(session, crate::Services::default());
+        let bar = crate::menubar::menu_bar(&app);
+        let file = &bar.iter().find(|(label, _)| label == "File").unwrap().1;
+        let item_index =
+            |command: &str| file.iter().position(|node| matches!(node, crate::menubar::MenuNode::Item { id, .. } if id == command)).unwrap();
+        let direct = item_index("photo.saveApplePhotosCopy");
+        assert_eq!(direct + 1, item_index("dialog.export"));
+        assert!(matches!(&file[direct], crate::menubar::MenuNode::Item { label, enabled:true, shortcut:Some(key), .. }
+            if label == "Export to Apple Photos (JPEG)" && key == "Cmd+S"));
+        assert!(can_save_copy(&app, id));
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(Default::default(), |ui| crate::panels::grid::context_menu(&mut app, ui, id));
+        output.textures_delta.clear();
+        assert!(crate::widgets::take_registry(&ctx).iter().any(|(id, _)| id == "context:photo.saveApplePhotosCopy"));
+        assert!(app.tasks.is_empty(), "opening the menu never starts an export or download");
+        assert!(!app.session.media.has_source(id, lightcraft_engine::media::SourceLevel::Full));
     }
 
     #[test]
@@ -793,7 +824,7 @@ mod tests {
         let text = host.app.shadow.as_ref().unwrap().painted_text().join("\n");
         assert!(text.contains("Apple Photos"));
         assert!(text.contains("Photos permission needs attention"));
-        assert!(text.contains("Save edited copy to Photos"));
+        assert!(text.contains("Export to Apple Photos (JPEG)"));
         assert!(text.contains("Download each original when needed"));
         assert!(!text.contains("iCloud downloads"));
         assert!(text.contains("Apple Photos unavailable"));

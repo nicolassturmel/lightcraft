@@ -233,9 +233,15 @@ The lookup is cached against the photo revision and does not rewrite old history
 remain recipe data: preview and export render from the original decoded pixels, never from a
 previously rendered preset image. Edited copies in Photos remain explicit save operations.
 
-Use **Save edited copy to Photos**, **File → Save Edited Copy to Photos**, or **⌘S** to render a
-full-size JPEG at quality 95 into a new asset in the Photos album **LightCraft**. The source’s
-capture date and location are carried onto the copy. Every save creates a new copy. The new
+Use **File → Export to Apple Photos (JPEG)**, the same item near the top of a photo’s
+right-click menu (grid, detail or filmstrip), the sidebar export button, or **⌘S** to render a
+full-size JPEG at quality 100 into a new asset in the Photos album **LightCraft**. The export
+uses the cropped native resolution, sRGB with its ICC profile, 4:4:4 chroma, and no file-size
+limit. It ignores the normal disk-export dialog’s resize/quality settings. The context menu
+exports the clicked photo even when another selected photo is active. The desktop Web view
+uses these same menus and the same background export job. Opening a menu never downloads an
+original or starts an export; an unavailable original still needs its explicit download action.
+The source’s capture date and location are carried onto the copy. Every save creates a new copy. The new
 asset receives `PHAdjustmentData` with the original’s local identifier and the edit recipe,
 using `PHContentEditingOutput(placeholderForCreatedAsset:)` in the same PhotoKit change block.
 Only asset creation requests are issued; no source edit or delete requests are issued.
@@ -247,6 +253,11 @@ select a LightCraft copy and use **Photo → Reopen Photos Adjustments**: the re
 original and restores its settings. The image is never developed a second time on top of its
 baked edits. Reopening requires the original to be accessible in the current Photos library;
 PhotoKit local identifiers are specific to that library/device.
+
+APPLE.13 (2026-10-16) puts the direct Photos action alongside File’s other export commands
+and in the shared grid/detail/filmstrip context menu. Synthetic engine tests check actual JPEG
+quantization at quality 100, full-size rendering from a genuine original rather than its smaller
+previews, recipe/source preservation, and explicit clicked-photo targeting without calling Photos.
 
 ## CR3 and masks
 

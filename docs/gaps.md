@@ -1,6 +1,6 @@
 # Gaps: where LightCraft falls short of Lightroom
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (AI default and repair-overlay cleanup; scores unchanged) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (direct Photos JPEG export menus; broader readiness unchanged) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 Every known shortfall, one entry each, ranked by user impact (how many Lightroom users hit it, and
 how hard it blocks them), then by effort. **Agents pick work from the top** (the first entry nobody is
@@ -94,6 +94,7 @@ Beta-blocking gaps (B) total **~230–430 h**; with the stability and platform w
 
 ## Revision history
 
+- 2026-10-16: APPLE.13 exposes direct full-size quality-100 JPEG export to Photos in File and photo context menus. The existing Mac copy workflow is now counted as partial system-library export; portable destinations remain missing. Readiness unchanged.
 - 2026-10-16: APPLE.12 defaults Mac Remove to AI, hides applied brush contours/pins, and provides Show Remove Edits for reselection. Cleanup-quality gaps and scores remain.
 - 2026-10-16: APPLE.11 adds explicit local Core ML AI Remove, separate durable source-bound repair assets, immutable originals, cached rendering, regeneration and undo/redo. Quality/detection gaps and scores remain.
 - 2026-10-15: APPLE.10 replaces per-image helper launches with one serialized persistent Apple worker, separates source/revision browsing cache keys from edits, reuses decoded originals with lossless disk backing for exports after RAM eviction/restart, and cancels offscreen filmstrip work. Scores unchanged.

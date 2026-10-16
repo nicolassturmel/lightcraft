@@ -1,6 +1,6 @@
 # Lightroom parity checklist
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (AI default and automatic repair-overlay cleanup; scores retained) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (direct full-size JPEG export to Photos in File/context menus; Mac-only coverage) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 The measured, row-by-row checklist: one row per Lightroom feature, menu item and shortcut, what we
 have and what is missing. It answers *does the feature exist?* (feature breadth). Whether it is good
@@ -44,7 +44,7 @@ cited here still exists. Formerly docs/parity.md.
 | P. Enhance (ENH) | 0 | 0 | 2 | 0 | — | — |
 | Q. HDR (HDR) | 2 | 3 | 0 | 0 | — | — |
 | R. Video (VID) | 0 | 0 | 5 | 1 | — | 0/2 (0%) |
-| S. Export (EXP) | 15 | 2 | 1 | 0 | 7/7 (100%) | 7/7 (100%) |
+| S. Export (EXP) | 15 | 3 | 0 | 0 | 7/7 (100%) | 7/7 (100%) |
 | T. Share (SHARE) | 0 | 0 | 0 | 4 | — | — |
 | U. Map & location (MAP) | 0 | 1 | 1 | 0 | — | 0/1 (0%) |
 | V. Preferences (PREF) | 6 | 2 | 2 | 2 | 1/1 (100%) | 4/5 (80%) |
@@ -53,9 +53,9 @@ cited here still exists. Formerly docs/parity.md.
 | Y. Menus | 82 | 0 | 4 | 8 | 47/47 (100%) | 23/23 (100%) |
 | Z. Keyboard shortcuts (desktop) | 75 | 3 | 3 | 1 | 49/52 (94%) | 23/24 (96%) |
 | Lightroom Classic extras | 33 | 15 | 35 | 9 | — | 23/25 (92%) |
-| **Total** | 396 | 50 | 73 | 36 | 192/200 (96%) | 142/155 (92%) |
+| **Total** | 396 | 51 | 72 | 36 | 192/200 (96%) | 142/155 (92%) |
 
-Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **81.1%** of 519 in-scope rows — P0 98.0% of 200 · P1 94.8% of 155 · P2 47.2% of 163.
+Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **81.2%** of 519 in-scope rows — P0 98.0% of 200 · P1 94.8% of 155 · P2 47.5% of 163.
 <!-- /parity:summary -->
 
 ## Top gaps and shortcut notes
@@ -397,7 +397,7 @@ differences and missing bindings are in [ui-parity.md](ui-parity.md#shortcuts).
 | LR-EXP-PREVIOUS | Export with previous settings | P0 | ✅ | `cmd:app.exportPrevious`, `cmd:dialog.export` | last options persist in prefs.json; dialog prefilled; no named export presets yet |
 | LR-EXP-DNGOPT | DNG options | P2 | 🟡 | `cmd:app.export` (`dngCompression`), `crates/engine/src/export.rs` | compression: lossless JPEG (default), ZIP or none; no embedded JPEG preview size, no lossy DNG output |
 | LR-EXP-ORIGINAL | Original + XMP | P1 | ✅ | `cmd:app.export` (`format: original`), `crates/engine/src/tests_export.rs` | file copied byte for byte, sidecar named after the output and subject to the conflict policy |
-| LR-EXP-PHOTOS | Export to the system photo library | P2 | ⬜ | | |
+| LR-EXP-PHOTOS | Export to the system photo library | P2 | 🟡 | `cmd:photo.saveApplePhotosCopy`, `crates/engine/src/apple.rs`, `crates/ui-egui/src/menubar.rs`, `crates/ui-egui/src/panels/grid.rs` | Mac Photos fork: File and grid/detail/filmstrip context menus export the active/clicked photo directly as full-size JPEG, quality 100, sRGB/4:4:4, to Photos > LightCraft; original unchanged, edit recipe attached, explicit-original download policy retained; native Web view shares the operation. Other system libraries/portable builds unsupported (APPLE.13) |
 | LR-EXP-PSD | Round trip to an external editor | P2 | ✅ | `cmd:photo.editExternal`, `cmd:photo.editInExternal`, `crates/engine/src/cmd/convert.rs` | a 16-bit TIFF `-Edit` copy with the edits (Adobe RGB / ProPhoto / P3 / sRGB) next to the original, added stacked on top of it and opened in the editor set in Settings ▸ General (or the system default) |
 
 ## T. Share (SHARE)
@@ -495,7 +495,7 @@ visible menu bar yet: the menu model is only exposed through the control channel
 | MENU-FILE-NEWFOLDER | New Folder… | P0 | ✅ | `cmd:dialog.newFolder` | ⇧⌘N |
 | MENU-FILE-NEWSMART | New Smart Album… | P1 | ✅ | `cmd:dialog.newSmartAlbum` | saves the current view (source + filter) |
 | MENU-FILE-IMPORTPROFILES | Import Profiles & Presets… | P1 | ✅ | `cmd:file.importPresets` | presets in every common format and .cube LUT profiles (see LR-IMP-PROFILES) |
-| MENU-FILE-EXPORT | Export… | P0 | ✅ | `cmd:dialog.export` | |
+| MENU-FILE-EXPORT | Export… | P0 | ✅ | `cmd:dialog.export`, `cmd:photo.saveApplePhotosCopy` | Mac File export group also exposes Export to Apple Photos (JPEG), full size/quality 100; same action in photo context menus |
 | MENU-FILE-EXPORTPREV | Export with Previous | P0 | ✅ | `cmd:app.exportPrevious` | ⌥⇧⌘E |
 | MENU-FILE-EXPORTPRESETS | Export preset submenu | P0 | ✅ | `cmd:app.export` (`preset`), `crates/ui-egui/src/menubar.rs` (Export with Preset) | built-ins, then user presets, then Custom… (the dialog); exports to the last folder |
 | MENU-FILE-SHARE | Share / get link / invite | OOS | 🚫 | | |
@@ -774,6 +774,7 @@ Latin stays upright. Advanced Japanese composition remains open. Regression cove
 
 ## Revision history
 
+- 2026-10-16: APPLE.13 exposes direct full-size quality-100 JPEG export to Photos > LightCraft in File and photo context menus. System-library export marked partial for Mac-only coverage; checklist recounted, readiness unchanged.
 - 2026-10-16: APPLE.12 defaults Mac Remove to AI and hides applied contours/pins; Show Remove Edits restores selection, and hidden pins do not intercept painting. Scores retained.
 - 2026-10-16: APPLE.11 adds Mac AI Remove and regeneration commands with separate durable repair assets; content-aware removal remains partial; spot sync downgraded for source-bound AI patches.
 - 2026-10-15: APPLE.10 shares one Apple RPC worker across image operations, caches browsing pixels independently of edits/catalogue revision, retains genuine originals for retouches, and cancels offscreen filmstrip work. Scores retained.
