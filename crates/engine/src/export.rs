@@ -1390,6 +1390,7 @@ struct RenderWork {
     /// The HDR rendition of a gain map JPEG (`job` renders its SDR base).
     hdr_job: Option<crate::media::RenderJob>,
     meta: Option<Metadata>,
+    photos_metadata: Option<crate::apple::MetadataJob>,
     opts: ExportOptions,
 }
 
@@ -1446,11 +1447,19 @@ fn prepare_guarded(
     let (work, weight) = if o.format.is_rendered() {
         let (w, h) = output_size(p, o);
         let meta = export_metadata(p, &session.catalog, o);
+        let photos_metadata = if matches!(p.source, lightcraft_catalog::Source::ApplePhotos { .. })
+            && o.metadata == MetadataPolicy::All
+            && session.media.photos_originals.is_some()
+        {
+            crate::apple::prepare_metadata(session, &serde_json::json!({"id":id.0})).ok()
+        } else {
+            None
+        };
         let gain_map = o.hdr_output() && o.format == ExportFormat::Jpeg;
         let job = session.export_job(id, w, h, o.effective_space(), o.effective_depth())?;
         let weight = render_weight(full_px, long, job.level, w.saturating_mul(h));
         let hdr_job = if gain_map { Some(session.export_job(id, w, h, o.effective_space(), OutputDepth::F32Hdr)?) } else { None };
-        (Work::Render(Box::new(RenderWork { job, hdr_job, meta, opts: o.clone() })), weight)
+        (Work::Render(Box::new(RenderWork { job, hdr_job, meta, photos_metadata, opts: o.clone() })), weight)
     } else {
         if p.develop.spots.iter().any(|s| s.mode == lightcraft_develop::SpotMode::Ai) {
             return Err(
@@ -1492,8 +1501,15 @@ impl PreparedExport {
         let file_name = self.file_name;
         match self.work {
             Work::Render(w) => {
-                let RenderWork { job, hdr_job, meta, opts } = *w;
+                let RenderWork { job, hdr_job, mut meta, photos_metadata, opts } = *w;
                 let r = job.run().rendered?;
+                // Missing local EXIF must not prevent exporting already cached original pixels.
+                // This header-only request never enables iCloud and reuses the persistent helper.
+                if let (Some(metadata), Some(read)) = (meta.as_mut(), photos_metadata)
+                    && let Ok(capture) = read.run()
+                {
+                    crate::apple::enrich_export(metadata, capture, &opts);
+                }
                 let bytes = match hdr_job {
                     Some(hj) => {
                         let hr = hj.run().rendered?;

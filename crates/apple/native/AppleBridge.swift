@@ -4,6 +4,7 @@ import AppKit
 import Photos
 import CoreImage
 import CoreML
+import CoreLocation
 import ImageIO
 import Vision
 import UniformTypeIdentifiers
@@ -96,6 +97,7 @@ func photosRow(_ asset: PHAsset, _ formatter: ISO8601DateFormatter) -> [String: 
         "revision": asset.modificationDate.map { formatter.string(from: $0) } ?? "",
         "format": (resource.originalFilename as NSString).pathExtension.uppercased()]
     if let date = asset.creationDate { row["captured"] = formatter.string(from: date) }
+    if let location = asset.location { row["gps"] = [location.coordinate.latitude, location.coordinate.longitude] }
     return row
 }
 
@@ -405,6 +407,7 @@ func decodePhotos(_ request: Request) async throws -> [String: Any] {
         var rawRequest = request
         rawRequest.operation = "raw-decode"; rawRequest.path = input.path
         var result = try raw(rawRequest); result["raw"] = true
+        if let metadata = try? imageMetadata(input) { result["capture"] = metadata["capture"]; result["fileSize"] = metadata["fileSize"] }
         return result
     }
     guard let image = CIImage(contentsOf: input, options: [.applyOrientationProperty: true]) else {
@@ -424,12 +427,78 @@ func decodePhotos(_ request: Request) async throws -> [String: Any] {
         if let address = buffer.baseAddress { context.render(scaled, toBitmap: address, rowBytes: w * 16, bounds: bounds, format: .RGBAf, colorSpace: space) }
     }
     try pixels.withUnsafeBytes { try Data($0).write(to: output, options: .atomic) }
-    return ["width": w, "height": h, "temperature": 6500.0, "tint": 0.0, "raw": false,
+    var result: [String: Any] = ["width": w, "height": h, "temperature": 6500.0, "tint": 0.0, "raw": false,
         "colorSpace": "extended-linear-sRGB", "decoder": "Apple PhotoKit/Core Image"]
+    if let metadata = try? imageMetadata(input) { result["capture"] = metadata["capture"]; result["fileSize"] = metadata["fileSize"] }
+    return result
 }
 
 let adjustmentIdentifier = "com.nicolassturmel.lightcraft.photos"
 let adjustmentVersion = "2"
+
+// Read container headers only. ImageIO must not decode/cache full-sized pixels for EXIF.
+func imageMetadata(_ url: URL) throws -> [String: Any] {
+    let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+    guard size > 0, size <= 512_000_000,
+          let image = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+          let properties = CGImageSourceCopyPropertiesAtIndex(image, 0, [kCGImageSourceShouldCache: false] as CFDictionary) as? [String: Any] else {
+        throw BridgeError("Apple ImageIO cannot read this image's metadata")
+    }
+    let tiff = properties[kCGImagePropertyTIFFDictionary as String] as? [String: Any] ?? [:]
+    let exif = properties[kCGImagePropertyExifDictionary as String] as? [String: Any] ?? [:]
+    let auxiliary = properties[kCGImagePropertyExifAuxDictionary as String] as? [String: Any] ?? [:]
+    var result: [String: Any] = [:]
+    func text(_ key: String, _ value: Any?) {
+        if let value = value as? String, !value.isEmpty, value.utf8.count <= 1024 { result[key] = value }
+    }
+    func number(_ key: String, _ value: Any?) {
+        if let value = value as? NSNumber, value.doubleValue.isFinite, value.doubleValue > 0 { result[key] = value }
+    }
+    text("make", tiff[kCGImagePropertyTIFFMake as String])
+    text("model", tiff[kCGImagePropertyTIFFModel as String])
+    text("lens_make", exif[kCGImagePropertyExifLensMake as String])
+    text("lens_model", exif[kCGImagePropertyExifLensModel as String] ?? auxiliary[kCGImagePropertyExifAuxLensModel as String])
+    number("exposure_time", exif[kCGImagePropertyExifExposureTime as String])
+    number("f_number", exif[kCGImagePropertyExifFNumber as String])
+    number("focal_length", exif[kCGImagePropertyExifFocalLength as String])
+    number("focal_length_35mm", exif[kCGImagePropertyExifFocalLenIn35mmFilm as String])
+    if let values = exif[kCGImagePropertyExifISOSpeedRatings as String] as? [NSNumber],
+       let iso = values.first, iso.int64Value > 0, iso.int64Value <= Int64(UInt32.max) { result["iso"] = iso.uint32Value }
+    if let gps = properties[kCGImagePropertyGPSDictionary as String] as? [String: Any],
+       let lat = gps[kCGImagePropertyGPSLatitude as String] as? NSNumber,
+       let lon = gps[kCGImagePropertyGPSLongitude as String] as? NSNumber {
+        let latitude = abs(lat.doubleValue) * ((gps[kCGImagePropertyGPSLatitudeRef as String] as? String) == "S" ? -1 : 1)
+        let longitude = abs(lon.doubleValue) * ((gps[kCGImagePropertyGPSLongitudeRef as String] as? String) == "W" ? -1 : 1)
+        if latitude.isFinite, longitude.isFinite, abs(latitude) <= 90, abs(longitude) <= 180 {
+            result["gps"] = ["latitude": latitude, "longitude": longitude]
+        }
+    }
+    return ["capture": result, "fileSize": size]
+}
+
+func photosMetadata(_ request: Request) async throws -> [String: Any] {
+    guard request.network != true else { throw BridgeError("EXIF reads never enable iCloud downloads. Use Download original first.") }
+    let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+    guard status == .authorized || status == .limited else { throw BridgeError("Allow Photos access using Refresh Photos before reading EXIF.") }
+    let asset = try photosAsset(required(request.asset, "asset"))
+    let options = PHContentEditingInputRequestOptions()
+    options.isNetworkAccessAllowed = false
+    options.canHandleAdjustmentData = { _ in true }
+    let input: PHContentEditingInput = try await withCheckedThrowingContinuation { continuation in
+        asset.requestContentEditingInput(with: options) { input, info in
+            if let input { continuation.resume(returning: input) }
+            else { continuation.resume(throwing: info[PHContentEditingInputErrorKey] as? Error ?? BridgeError("EXIF is unavailable locally. Use Download original for this photo first.")) }
+        }
+    }
+    guard let url = input.fullSizeImageURL else { throw BridgeError("Photos has no local image headers. Use Download original for this photo first.") }
+    var result = try imageMetadata(url)
+    if let location = asset.location {
+        var capture = result["capture"] as? [String: Any] ?? [:]
+        capture["gps"] = ["latitude": location.coordinate.latitude, "longitude": location.coordinate.longitude, "altitude": location.altitude]
+        result["capture"] = capture
+    }
+    return result
+}
 
 func photosCopyAdjustment(_ request: Request) throws -> Data {
     let sourceID = try required(request.asset, "asset")
@@ -461,6 +530,12 @@ func savePhotosCopy(_ request: Request) async throws -> [String: Any] {
     let jpegData = try Data(contentsOf: jpeg)
     guard let image = CGImageSourceCreateWithURL(jpeg as CFURL, nil), CGImageSourceGetCount(image) > 0,
           CGImageSourceGetType(image) as String? == UTType.jpeg.identifier else { throw BridgeError("An edited Photos copy must be a valid JPEG") }
+    // Use the exported location, including an intentional removal, instead of restoring source GPS.
+    let exported = try imageMetadata(jpeg)
+    let gps = (exported["capture"] as? [String: Any])?["gps"] as? [String: Double]
+    let copyLocation: CLLocation?
+    if let latitude = gps?["latitude"], let longitude = gps?["longitude"] { copyLocation = CLLocation(latitude: latitude, longitude: longitude) }
+    else { copyLocation = nil }
     let options = PHFetchOptions(); options.predicate = NSPredicate(format: "title = %@", "LightCraft")
     let album = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: options).firstObject
     var createdID: String?
@@ -471,7 +546,7 @@ func savePhotosCopy(_ request: Request) async throws -> [String: Any] {
         let resourceOptions = PHAssetResourceCreationOptions()
         resourceOptions.originalFilename = "LightCraft-" + jpeg.lastPathComponent
         creation.addResource(with: .photo, fileURL: jpeg, options: resourceOptions)
-        creation.creationDate = source.creationDate; creation.location = source.location
+        creation.creationDate = source.creationDate; creation.location = copyLocation
         guard let placeholder = creation.placeholderForCreatedAsset else { return }
         createdID = placeholder.localIdentifier
         let output = PHContentEditingOutput(placeholderForCreatedAsset: placeholder)
@@ -846,6 +921,8 @@ func perform(_ request: Request) async throws -> [String: Any] {
         guard #available(macOS 12.0, *) else { throw BridgeError("Photos image decoding requires macOS 12 or later") }
         result = try await decodePhotos(request)
     case "photos-save-copy": result = try await savePhotosCopy(request)
+    case "photos-metadata": result = try await photosMetadata(request)
+    case "image-metadata": result = try imageMetadata(URL(fileURLWithPath: required(request.path, "path")))
     case "photos-recipe": result = try await photosRecipe(request)
     case "raw-probe", "raw-decode":
         guard #available(macOS 12.0, *) else { throw BridgeError("Apple RAW requires macOS 12 or later") }

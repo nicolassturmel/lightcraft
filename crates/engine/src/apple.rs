@@ -18,6 +18,8 @@ mod changes;
 pub use changes::{PhotosChanges, PhotosUpdate, PhotosWatch};
 mod originals;
 pub use originals::{CachedOriginal, OriginalCache};
+mod metadata;
+pub use metadata::{Capture as PhotosMetadata, MetadataJob, accept_metadata, cached_metadata, enrich_export, prepare_metadata};
 
 pub fn services_status() -> Value {
     #[cfg(target_os = "macos")]
@@ -120,6 +122,8 @@ pub struct Asset {
     #[serde(default)]
     pub revision: String,
     pub captured: Option<String>,
+    #[serde(default)]
+    pub gps: Option<(f64, f64)>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -391,6 +395,7 @@ impl Session {
                 || !seen.insert(asset.id.clone())
                 || asset.width == 0
                 || asset.height == 0
+                || asset.gps.is_some_and(|(lat, lon)| !lat.is_finite() || !lon.is_finite() || lat.abs() > 90.0 || lon.abs() > 180.0)
                 || u64::from(asset.width) * u64::from(asset.height) > 100_000_000
             {
                 return Err("Invalid or duplicate Photos asset metadata; the current library has been kept".into());
@@ -412,6 +417,7 @@ impl Session {
                 .unwrap_or_else(|| Photo::new(id, source.clone(), &asset.name, &asset.format, asset.width, asset.height, &(self.clock)()));
             if photo.source != source {
                 invalidated.push(id);
+                metadata::clear_capture(&mut photo);
             }
             let was_present = self.catalog.photo(id).is_some();
             photo.source = source;
@@ -420,6 +426,9 @@ impl Session {
             photo.width = asset.width;
             photo.height = asset.height;
             photo.captured = asset.captured;
+            if !drafts.contains_key(&asset.id) {
+                photo.meta.gps = asset.gps;
+            }
             photo.kind = if asset.raw { MediaKind::Raw } else { MediaKind::Image };
             photo.deleted = false;
             photo.local = false;
@@ -431,8 +440,10 @@ impl Session {
                 }
                 if let Some(draft) = drafts.get(&asset.id) {
                     draft.apply(&mut photo);
+                    metadata::clear_capture(&mut photo);
                 }
             }
+            metadata::apply_cached(&mut photo, self.media.photos_originals.as_ref().or(loaded.originals.as_ref()));
             next.apply(Op::AddPhoto { photo: Box::new(photo) }).map_err(|e| e.to_string())?;
         }
         for album in &loaded.snapshot.albums {
@@ -578,7 +589,10 @@ pub fn decode_photo(asset: &str, max_edge: usize, network: bool) -> Result<crate
             as_shot_tint: decoded.metadata.tint.round(),
             ..Default::default()
         };
-        Ok(crate::media::DecodedSource::new(Arc::new(image), Some(info)))
+        let mut source = crate::media::DecodedSource::new(Arc::new(image), Some(info));
+        source.capture =
+            decoded.metadata.capture.as_ref().and_then(|fields| metadata::from_fields(fields, decoded.metadata.file_size).ok()).map(Arc::new);
+        Ok(source)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -699,6 +713,10 @@ pub fn accept_download(s: &mut Session, job: &DownloadJob, downloaded: Downloade
         return Err("The Photos original changed during download; refresh and retry".into());
     }
     let (width, height) = (downloaded.full.image.width, downloaded.full.image.height);
+    if let Some(capture) = downloaded.full.capture.as_deref() {
+        let metadata_job = MetadataJob { id: job.id, generation: job.generation, source: job.origin.clone(), cache: job.cache.clone() };
+        accept_metadata(s, &metadata_job, capture.clone())?;
+    }
     s.media.insert_source(job.id, SourceLevel::Thumb, downloaded.thumb);
     s.media.insert_source(job.id, SourceLevel::Preview, downloaded.preview);
     s.media.insert_source(job.id, SourceLevel::Full, downloaded.full);
@@ -814,6 +832,10 @@ pub fn apply_recipe(s: &mut Session, recipe: &Value) -> crate::Result<Value> {
     )?;
     s.source = LibrarySource::All;
     s.selection = Selection::single(id);
+    if let Some(capture) = cached_metadata(s, id) {
+        let job = prepare_metadata(s, &json!({"id":id.0})).map_err(crate::EngineError::Other)?;
+        accept_metadata(s, &job, capture).map_err(crate::EngineError::Other)?;
+    }
     Ok(json!({"id":id.0, "originalUnchanged":true}))
 }
 

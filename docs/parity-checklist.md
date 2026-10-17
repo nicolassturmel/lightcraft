@@ -1,6 +1,6 @@
 # Lightroom parity checklist
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** patch (bounded Photos metadata and durable large-recipe references; Mac-only coverage) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-17 · **Change:** minor (PhotoKit EXIF recovery and honest Photos metadata coverage) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 The measured, row-by-row checklist: one row per Lightroom feature, menu item and shortcut, what we
 have and what is missing. It answers *does the feature exist?* (feature breadth). Whether it is good
@@ -30,7 +30,7 @@ cited here still exists. Formerly docs/parity.md.
 | B. Library management (LIB) | 22 | 2 | 1 | 2 | 9/9 (100%) | 9/9 (100%) |
 | C. Views & navigation (VIEW) | 15 | 1 | 1 | 0 | 8/9 (89%) | 4/4 (100%) |
 | D. Search & filter (FILT) | 11 | 1 | 1 | 0 | 4/4 (100%) | 4/4 (100%) |
-| E. Metadata (META) | 5 | 1 | 0 | 0 | 2/2 (100%) | 2/2 (100%) |
+| E. Metadata (META) | 4 | 2 | 0 | 0 | 2/2 (100%) | 1/2 (50%) |
 | F. Edit panel — global adjustments (EDIT) | 43 | 2 | 3 | 1 | 28/28 (100%) | 13/14 (93%) |
 | G. Profiles (PROF) | 7 | 1 | 3 | 0 | 3/4 (75%) | 3/3 (100%) |
 | H. Crop & rotate (CROP) | 9 | 0 | 0 | 1 | 6/6 (100%) | 3/3 (100%) |
@@ -53,9 +53,9 @@ cited here still exists. Formerly docs/parity.md.
 | Y. Menus | 82 | 0 | 4 | 8 | 47/47 (100%) | 23/23 (100%) |
 | Z. Keyboard shortcuts (desktop) | 75 | 3 | 3 | 1 | 49/52 (94%) | 23/24 (96%) |
 | Lightroom Classic extras | 33 | 15 | 35 | 9 | — | 23/25 (92%) |
-| **Total** | 396 | 51 | 72 | 36 | 192/200 (96%) | 142/155 (92%) |
+| **Total** | 395 | 52 | 72 | 36 | 192/200 (96%) | 141/155 (91%) |
 
-Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **81.2%** of 519 in-scope rows — P0 98.0% of 200 · P1 94.8% of 155 · P2 47.5% of 163.
+Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **81.1%** of 519 in-scope rows — P0 98.0% of 200 · P1 94.5% of 155 · P2 47.5% of 163.
 <!-- /parity:summary -->
 
 ## Top gaps and shortcut notes
@@ -162,12 +162,12 @@ differences and missing bindings are in [ui-parity.md](ui-parity.md#shortcuts).
 
 | Id | Feature | Tier | Status | Evidence | Missing / notes |
 |---|---|---|---|---|---|
-| LR-META-INFO | Info panel | P0 | ✅ | `cmd:panel.info`, `cmd:photo.setMeta`, `crates/ui-egui/src/panels/right.rs` (`info`, `camera_card`) | camera card (camera, lens, size, format, focal length / shutter / aperture / ISO); title, caption, alt text, extended description, copyright, copyright status, rights usage terms, copyright info URL, creator; file name (rename), file path (reveal), capture time (edit); location, city, state, country; GPS. No flash, map snippet or people |
+| LR-META-INFO | Info panel | P0 | ✅ | `cmd:panel.info`, `cmd:photo.setMeta`, `crates/ui-egui/src/panels/right.rs` (`info`, `camera_card`) | camera card (camera, lens, size, format, focal length / shutter / aperture / ISO); title, caption, alt text, extended description, copyright, copyright status, rights usage terms, copyright info URL, creator; file name (rename), file path (reveal), capture time (edit); location, city, state, country; GPS. No flash, map snippet or people. Mac Photos: `cmd:photo.readApplePhotosMetadata` reads local capture headers once, caches source facts and fills Info (APPLE.15) |
 | LR-META-COPYRIGHT-DEFAULT | Default copyright on import | P1 | ✅ | `cmd:library.preferences` (`import.copyright`, `import.creator`), `crates/ui-egui/src/panels/settings.rs` | Settings → Import → Metadata; fills only photos without their own |
 | LR-META-LOCATION | Location editing | P2 | 🟡 | `cmd:photo.setMeta` (`location`, `city`, `state`, `country`, `gps`) | place fields and GPS (decimal or degrees / minutes / seconds) edited in Info, read/written as IPTC Core / Photoshop / EXIF XMP; Show on Map opens OpenStreetMap; no embedded map, no geocoding |
 | LR-META-COPYPASTE | Copy / paste metadata | P2 | ✅ | `cmd:photo.copyMetadata`, `cmd:photo.pasteMetadata` | title, caption, alt text, extended description, copyright (notice, status, usage terms, info URL), creator, place fields, keywords; `fields` picks a subset |
 | LR-META-XMP | XMP read/write | P0 | ✅ | `cmd:photo.saveMetadataToFile`, `cmd:photo.readMetadataFromFile`, `cmd:library.xmpPreferences`, `crates/engine/src/sidecar.rs`, `docs/xmp-interop.md` | sidecar wins for metadata; a sidecar capture time (`exif:DateTimeOriginal` / `photoshop:DateCreated` / `xmp:CreateDate`) fills in only when the file has none; saving merges into an existing sidecar (`crates/meta/src/xmp_merge.rs`): another app's `crs:`, `xmpMM:History` and unknown namespaces are kept byte for byte, an unreadable sidecar is backed up first; with stem naming, files sharing a stem (raw + JPEG) get separate sidecars (`<file>.xmp` for all but the raw); a `crs:` custom white balance on a relative-WB raw is shifted from `crs:AsShotTemperature` rather than read as Kelvin, or kept As Shot and reported when the packet has no as-shot white (issue #510) |
-| LR-META-EXIF-FULL | Full EXIF/IPTC [Classic] | P1 | ✅ | `cmd:photo.allMetadata`, `cmd:dialog.allMetadata`, `crates/meta/src/tags.rs`, `crates/meta/src/exif.rs`, `crates/meta/src/iptc.rs` | read and written on export; Info ▸ All Metadata…: every TIFF / EXIF / GPS / interop tag (named, common values spelled out) and the XMP fields, searchable; metadata presets |
+| LR-META-EXIF-FULL | Full EXIF/IPTC [Classic] | P1 | 🟡 | `cmd:photo.allMetadata`, `cmd:dialog.allMetadata`, `crates/meta/src/tags.rs`, `crates/meta/src/exif.rs`, `crates/meta/src/iptc.rs` | read and written on export; Info ▸ All Metadata…: every TIFF / EXIF / GPS / interop tag (named, common values spelled out) and the XMP fields, searchable; metadata presets. Photos sources now show and export cached PhotoKit/ImageIO capture fields, but complete maker notes/IPTC/XMP are not exposed; full-system-library metadata parity remains open (APPLE.15) |
 
 ## F. Edit panel — global adjustments (EDIT)
 
@@ -773,6 +773,8 @@ Latin stays upright. Advanced Japanese composition remains open. Regression cove
 `export::tests::japanese_watermarks_support_vertical_columns`, `japanese_watermark_options_and_legacy_defaults`, `watermarks_work_without_craft_fonts`.
 
 ## Revision history
+
+- 2026-10-17: APPLE.15 recovers local Photos capture EXIF for Info, All Metadata and exports with source-bound caching, no automatic iCloud access, and metadata-policy checks. Full EXIF/IPTC row is partial for Photos coverage; broader readiness unchanged.
 
 - 2026-10-16: APPLE.14 bounds PhotoKit adjustment metadata, retains large recipes in immutable local snapshots and verifies references on reopening; oversized native requests return errors instead of terminating the worker. System-library coverage remains partial and scores unchanged.
 - 2026-10-16: APPLE.13 exposes direct full-size quality-100 JPEG export to Photos > LightCraft in File and photo context menus. System-library export marked partial for Mac-only coverage; checklist recounted, readiness unchanged.

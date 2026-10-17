@@ -556,6 +556,7 @@ fn info(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     let t = Tokens::get(ui.ctx());
     padded(ui, |ui| {
         camera_card(ui, &p);
+        crate::apple_photos::metadata_ui(app, ui, id);
         ui.add_space(6.0);
         if let Some(why) = &p.preview_only {
             crate::widgets::preview_only_notice(ui, "info", why);

@@ -2,6 +2,19 @@ use super::{CommandSpec, cmd};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        cmd!(
+            "photo.readApplePhotosMetadata",
+            "Read EXIF from Apple Photos",
+            ["Photo"],
+            None,
+            "{id?:active} → read and cache local capture metadata with PhotoKit/ImageIO; never enable iCloud or decode pixels",
+            crate::apple::has_photo,
+            |s, p| {
+                let job = crate::apple::prepare_metadata(s, p).map_err(crate::EngineError::Other)?;
+                let capture = job.run().map_err(crate::EngineError::Other)?;
+                crate::apple::accept_metadata(s, &job, capture).map_err(crate::EngineError::Other)
+            }
+        ),
         cmd!(query "apple.status", "Apple Services", [], None, "{} → Photos authorization and Core Image RAW/Vision availability (never requests permission)", crate::apple::enabled, |_, _| {
             crate::apple::status().map_err(crate::EngineError::Other)
         }),

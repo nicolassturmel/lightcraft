@@ -10,6 +10,8 @@ pub struct Browser {
     pub error: Option<String>,
     pub last_copy: Option<Value>,
     pub download_errors: BTreeMap<PhotoId, String>,
+    metadata_attempted: BTreeMap<PhotoId, lightcraft_engine::catalog::Source>,
+    metadata_errors: BTreeMap<PhotoId, String>,
     attempted: bool,
     refreshed_at: f64,
     refresh_requested: bool,
@@ -47,6 +49,7 @@ pub fn intercept(app: &mut LightcraftApp, id: &str, params: &Value) -> Option<Re
         "library.applePhotos" => Some(start_refresh(app)),
         "photo.saveApplePhotosCopy" => Some(start_copy(app, params)),
         "photo.downloadApplePhotosOriginal" => Some(start_download(app, params)),
+        "photo.readApplePhotosMetadata" => Some(start_metadata(app, params)),
         "photo.reopenApplePhotosRecipe" => Some(start_recipe(app)),
         "library.importIntoApplePhotos" => Some(start_import(app, params)),
         "mask.add" | "mask.addComponent" if lightcraft_engine::apple::wants_vision(&app.session, params) => Some(start_mask(app, id, params)),
@@ -200,6 +203,63 @@ fn download_label(id: PhotoId) -> String {
     format!("Downloading Photos original {}", id.0)
 }
 
+fn metadata_label(id: PhotoId) -> String {
+    format!("Reading Photos EXIF {}", id.0)
+}
+
+fn start_metadata(app: &mut LightcraftApp, params: &Value) -> Result<Value, String> {
+    let job = lightcraft_engine::apple::prepare_metadata(&app.session, params)?;
+    let id = job.id;
+    let label = metadata_label(id);
+    let generation = app.session.library_generation();
+    if app.tasks.is_running(&label) {
+        return Ok(json!({"pending":true}));
+    }
+    app.apple_photos.metadata_attempted.insert(id, job.source.clone());
+    app.apple_photos.metadata_errors.remove(&id);
+    crate::tasks::spawn(
+        app,
+        &label,
+        Some("applePhotosMetadata"),
+        move || {
+            let result = job.run();
+            (job, result)
+        },
+        move |app, _, (job, result)| {
+            if app.session.library_generation() != generation || app.session.catalog.photo(id).is_none_or(|p| p.source != job.source) {
+                return;
+            }
+            if let Err(error) = result.and_then(|capture| lightcraft_engine::apple::accept_metadata(&mut app.session, &job, capture)) {
+                app.apple_photos.metadata_errors.insert(id, error);
+            }
+        },
+    )?;
+    Ok(json!({"pending":true,"id":id.0}))
+}
+
+pub fn metadata_ui(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
+    if !app.session.catalog.photo(id).is_some_and(|p| matches!(p.source, lightcraft_engine::catalog::Source::ApplePhotos { .. })) {
+        return;
+    }
+    let running = app.tasks.is_running(&metadata_label(id));
+    let ready = lightcraft_engine::apple::cached_metadata(&app.session, id).is_some();
+    let label = if running {
+        "Reading Photos EXIF…"
+    } else if ready {
+        "EXIF loaded from Apple Photos"
+    } else {
+        "Read EXIF from Apple Photos"
+    };
+    let response = ui.add_enabled(!running && !ready, egui::Button::new(crate::i18n::tr(label)));
+    crate::widgets::register(ui.ctx(), format!("button:photosMetadata:{}", id.0), response.rect);
+    if response.clicked() {
+        let _ = app.run("photo.readApplePhotosMetadata", json!({"id":id.0}));
+    }
+    if let Some(error) = app.apple_photos.metadata_errors.get(&id) {
+        ui.label(egui::RichText::new(error).small());
+    }
+}
+
 fn start_download(app: &mut LightcraftApp, params: &Value) -> Result<Value, String> {
     let job = lightcraft_engine::apple::prepare_download(&app.session, params)?;
     let label = download_label(job.id);
@@ -348,6 +408,14 @@ pub fn tick(app: &mut LightcraftApp, ctx: &egui::Context) {
     }
     if app.apple_photos.watch_generation.is_some_and(|g| g != app.session.library_generation()) {
         app.apple_photos = Browser::default();
+    }
+    // Recover EXIF for previously downloaded originals once; browsing cloud-only photos never
+    // requests their image resource. Edits/renders do not invalidate this source metadata cache.
+    if let Some(photo) = app.session.active().and_then(|id| app.session.catalog.photo(id)).cloned()
+        && app.session.media.photos_originals.as_ref().is_some_and(|c| c.get(&photo.source).is_some())
+        && app.apple_photos.metadata_attempted.get(&photo.id) != Some(&photo.source)
+    {
+        let _ = start_metadata(app, &json!({"id":photo.id.0}));
     }
     if app.session.interaction.is_none()
         && let Some((generation, update)) = app.apple_photos.pending_refresh.take()
@@ -589,6 +657,26 @@ mod tests {
             }))
             .unwrap(),
         )
+    }
+
+    #[test]
+    fn metadata_button_does_not_fetch_an_original_while_browsing() {
+        let mut session = lightcraft_engine::Session::new().with_apple_photos(None);
+        session.apply_photos_snapshot(metadata()).unwrap();
+        let id = session.catalog.photos().next().unwrap().id;
+        session.execute("library.select", &json!({"ids":[id.0]})).unwrap();
+        let mut app = LightcraftApp::new(session, crate::Services::default());
+        app.apple_photos.attempted = true;
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            tick(&mut app, ui.ctx());
+            metadata_ui(&mut app, ui, id);
+        });
+        output.textures_delta.clear();
+        assert!(crate::widgets::take_registry(&ctx).iter().any(|(key, _)| key == &format!("button:photosMetadata:{}", id.0)));
+        assert!(app.tasks.is_empty());
+        assert!(app.apple_photos.metadata_attempted.is_empty());
+        assert!(!app.session.media.has_source(id, lightcraft_engine::media::SourceLevel::Full));
     }
 
     #[cfg(target_os = "macos")]

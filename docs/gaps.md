@@ -1,6 +1,6 @@
 # Gaps: where LightCraft falls short of Lightroom
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** patch (large Photos adjustment crash fixed; broader readiness unchanged) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-17 · **Change:** minor (local Photos EXIF recovery; full metadata coverage remains partial) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 Every known shortfall, one entry each, ranked by user impact (how many Lightroom users hit it, and
 how hard it blocks them), then by effort. **Agents pick work from the top** (the first entry nobody is
@@ -34,6 +34,8 @@ of edits/catalogue revision; decoded originals are reused across retouches and l
 keeps exports available after RAM eviction/restart. Offscreen filmstrip
 work is cancelled. APPLE.11 adds local LaMa/Core ML inpainting to Remove, with source-bound repair assets, undo/redo, regeneration and shared preview/export compositing. Its 800×800 context and manual brush do not close broad cleanup-quality/detection parity. See [apple-integration.md](apple-integration.md). The portable gaps and scores below remain
 open; no broader camera-coverage claim is made from one Canon R8 test.
+
+APPLE.15 adds local PhotoKit/ImageIO capture EXIF in Info and rendered exports, with a small revision-bound cache. Complete maker-note/IPTC/XMP access through Photos remains missing; no automatic iCloud original retrieval is enabled.
 
 ## Ranked
 
@@ -93,6 +95,8 @@ Beta-blocking gaps (B) total **~230–430 h**; with the stability and platform w
 - 2026-10-05: compressed NEF (#86). The older history is in [ROADMAP.md](../ROADMAP.md#progress-log).
 
 ## Revision history
+
+- 2026-10-17: APPLE.15 recovers local capture EXIF from Photos, caches it and preserves it in rendered exports with privacy policies. Full EXIF/IPTC marked partial because Photos does not expose complete maker-note/IPTC/XMP coverage. Readiness unchanged.
 
 - 2026-10-16: APPLE.14 fixes PhotoKit's oversized-adjustment exception using durable local export snapshots and small, verified references. Large recipes require the local Export Recipes folder when reopening on another Mac; portable/cleanup-quality gaps and scores remain.
 - 2026-10-16: APPLE.13 exposes direct full-size quality-100 JPEG export to Photos in File and photo context menus. The existing Mac copy workflow is now counted as partial system-library export; portable destinations remain missing. Readiness unchanged.

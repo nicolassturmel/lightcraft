@@ -117,6 +117,14 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "photo.allMetadata", "All Metadata", [], None, "{id?} → {exif: [{group, tag, name, value}], xmp: [{name, value}]} — every EXIF / TIFF / GPS tag of the file and its XMP properties", always, |s, p| {
             let id = photo_arg(s, p, "photo.allMetadata")?;
             let ph = s.catalog.photo(id).ok_or_else(|| super::bad("photo.allMetadata", "no such photo"))?.clone();
+            if matches!(ph.source, lightcraft_catalog::Source::ApplePhotos { .. }) {
+                let capture=crate::apple::cached_metadata(s,id).ok_or_else(||super::bad("photo.allMetadata","Read EXIF from Apple Photos in Info first"))?;
+                let mut metadata=capture.metadata;
+                metadata.capture_time=ph.captured.as_deref().and_then(lightcraft_meta::DateTime::parse_iso);
+                let rows:Vec<Value>=lightcraft_meta::file_tag_rows(&lightcraft_meta::write_exif(&metadata)).into_iter()
+                    .map(|r|json!({"group":r.group,"tag":r.tag,"name":r.name,"value":r.value})).collect();
+                return Ok(json!({"exif":rows,"xmp":[],"note":"Capture metadata from Apple Photos / ImageIO; proprietary maker notes are not included"}));
+            }
             let lightcraft_catalog::Source::File { path } = &ph.source else {
                 return Ok(json!({"exif": [], "xmp": [], "note": "a generated demo photo has no file"}));
             };

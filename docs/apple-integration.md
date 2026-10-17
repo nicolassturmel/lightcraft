@@ -277,6 +277,37 @@ and in the shared grid/detail/filmstrip context menu. Synthetic engine tests che
 quantization at quality 100, full-size rendering from a genuine original rather than its smaller
 previews, recipe/source preservation, and explicit clicked-photo targeting without calling Photos.
 
+## Capture metadata (EXIF)
+
+APPLE.15 (2026-10-17) reads camera make/model, lens make/model, shutter speed, aperture,
+ISO and focal length through public PhotoKit and ImageIO APIs. Photos supplies the capture date
+and location. The Info camera card and **All Metadata…** show the recovered capture fields;
+proprietary maker notes and complete IPTC/XMP packets are not exposed by this integration.
+
+Future explicit original downloads read EXIF from the same temporary resource before it is
+removed, without another PhotoKit retrieval, and save the small metadata cache before completing.
+
+Already downloaded originals recover their capture metadata once when selected. Info also has
+**Read EXIF from Apple Photos** for an explicit local attempt on another image. The request
+uses `PHContentEditingInputRequestOptions.isNetworkAccessAllowed = false`; ImageIO reads
+properties with pixel caching disabled, without decoding or copying an original into LightCraft.
+If its headers are unavailable locally, use that photo's existing **Download original** action.
+EXIF reads never request iCloud download permission or rescan the library.
+
+Small, revision-bound JSON files in **Photos Adjustments/Source Metadata** retain these source
+facts across restarts. This is a regenerable metadata cache, separate from edit descriptions,
+AI repair assets, immutable export recipes and decoded original pixels. Slider changes and
+presets reuse the same metadata. Reading EXIF preserves edit history, annotations and originals.
+
+Rendered exports, including direct JPEG copies in Photos > LightCraft, reuse the capture cache
+or try local headers on the export worker. **All** includes camera settings; **No camera**,
+**Copyright**, **None** and **Remove location** still apply. If the original pixels remain cached
+but Photos cannot provide local headers, the image can still export with the metadata already
+known by LightCraft; no iCloud transfer starts to fill missing fields.
+
+Synthetic tests cover ImageIO extraction, export EXIF round trips, metadata policy/privacy,
+restart caching, source-revision separation, stale jobs and preservation of edits/annotations.
+
 ## CR3 and masks
 
 Core Image performs RAW demosaicing, camera colour conversion and as-shot white balance.

@@ -25,6 +25,10 @@ pub struct RawMetadata {
     pub tint: f64,
     #[serde(default)]
     pub raw: bool,
+    #[serde(default)]
+    pub capture: Option<Value>,
+    #[serde(default, rename = "fileSize")]
+    pub file_size: u64,
 }
 
 pub struct RawImage {
@@ -102,6 +106,14 @@ pub fn photos_recipe(asset: &str, network: bool) -> Result<Value, String> {
         let _ = (asset, network);
         Err("Apple Photos is available only on macOS".into())
     }
+}
+
+/// Local PhotoKit/ImageIO headers only. Never downloads an original or decodes pixels.
+pub fn photos_metadata(asset: &str) -> Result<Value, String> {
+    if asset.is_empty() || asset.len() > 1024 {
+        return Err("Invalid Photos metadata identifier".into());
+    }
+    invoke(&serde_json::json!({"operation":"photos-metadata", "asset":asset, "network":false}), Duration::from_secs(45))
 }
 
 /// Decode directly through PhotoKit. The resource file exists only for the duration of decoding.

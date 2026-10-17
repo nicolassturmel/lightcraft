@@ -35,12 +35,13 @@ pub struct CachedOriginal {
 }
 
 pub struct OriginalCache {
+    pub(super) capture: super::metadata::Cache,
     directory: PathBuf,
     entries: Mutex<BTreeMap<String, CachedOriginal>>,
     budget: u64,
 }
 
-fn key(source: &Source) -> Option<String> {
+pub(super) fn key(source: &Source) -> Option<String> {
     let Source::ApplePhotos { asset, revision } = source else { return None };
     Some(Hasher128::new().str("Photos original pixels v1").str(asset).str(revision).finish().to_string())
 }
@@ -84,7 +85,7 @@ impl OriginalCache {
                 }
             }
         }
-        Arc::new(Self { directory, entries: Mutex::new(entries), budget: DISK_BYTES })
+        Arc::new(Self { capture: super::metadata::Cache::scan(adjustments), directory, entries: Mutex::new(entries), budget: DISK_BYTES })
     }
 
     pub fn get(&self, source: &Source) -> Option<CachedOriginal> {
@@ -93,6 +94,9 @@ impl OriginalCache {
 
     /// Runs only on the explicit download worker, before its successful completion is announced.
     pub fn store(&self, source: &Source, decoded: &DecodedSource) -> Result<(), String> {
+        if let Some(capture) = &decoded.capture {
+            self.capture.store(source, capture)?;
+        }
         let k = key(source).ok_or("Only Photos originals belong in this cache")?;
         let image = &decoded.image;
         let info = decoded.info.clone().unwrap_or_default();
@@ -267,7 +271,12 @@ mod tests {
     #[test]
     fn disk_budget_evicts_older_cached_originals_without_removing_the_new_one() {
         let dir = folder();
-        let cache = OriginalCache { directory: dir.join("Original Cache"), entries: Mutex::default(), budget: 1000 };
+        let cache = OriginalCache {
+            capture: super::super::metadata::Cache::scan(&dir),
+            directory: dir.join("Original Cache"),
+            entries: Mutex::default(),
+            budget: 1000,
+        };
         cache.store(&source("r1"), &decoded()).unwrap();
         cache.store(&source("r2"), &decoded()).unwrap();
         assert!(cache.get(&source("r1")).is_none());

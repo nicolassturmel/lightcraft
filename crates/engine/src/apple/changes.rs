@@ -108,6 +108,7 @@ impl Session {
                 || !seen.insert(asset.id.clone())
                 || asset.width == 0
                 || asset.height == 0
+                || asset.gps.is_some_and(|(lat, lon)| !lat.is_finite() || !lon.is_finite() || lat.abs() > 90.0 || lon.abs() > 180.0)
                 || u64::from(asset.width) * u64::from(asset.height) > 100_000_000
             {
                 return Err("Invalid or duplicate Photos change; current library kept".into());
@@ -133,13 +134,20 @@ impl Session {
                 }
                 p
             });
+            if before.as_ref().is_none_or(|p| p.source != source) {
+                super::metadata::clear_capture(&mut photo);
+            }
             photo.source = source;
             photo.file_name = asset.name;
             photo.format = asset.format;
             photo.width = asset.width;
             photo.height = asset.height;
             photo.captured = asset.captured;
+            if !state.drafts.contains_key(&asset.id) {
+                photo.meta.gps = asset.gps;
+            }
             photo.kind = if asset.raw { MediaKind::Raw } else { MediaKind::Image };
+            super::metadata::apply_cached(&mut photo, self.media.photos_originals.as_ref());
             if let Some(before) = before {
                 if *before == photo {
                     continue;

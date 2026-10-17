@@ -165,6 +165,7 @@ impl Twin {
 /// Pixels and the source interpretation learned while decoding; they must be cached together.
 #[derive(Clone)]
 pub struct DecodedSource {
+    pub capture: Option<Arc<crate::apple::PhotosMetadata>>,
     pub image: Arc<Rgb32f>,
     pub info: Option<SourceInfo>,
     /// A smart preview's stored camera tone curve: the one decoder fact its pixels need that the
@@ -176,7 +177,7 @@ pub struct DecodedSource {
 
 impl DecodedSource {
     pub fn new(image: Arc<Rgb32f>, info: Option<SourceInfo>) -> Self {
-        DecodedSource { image, info, camera_tone: None, denoised: None }
+        DecodedSource { capture: None, image, info, camera_tone: None, denoised: None }
     }
 
     /// The picture to develop for a Denoise `amount` (0 to 1, see [`DevelopSettings::denoise_amount`]): the plain one,
@@ -286,6 +287,7 @@ impl SourceRef {
                                     return Err("the cached AI Denoise picture could not be read; clear the denoise cache and retry".into());
                                 }
                                 Ok(DecodedSource {
+                                    capture: None,
                                     image: Arc::new(image),
                                     info: Some(info),
                                     camera_tone: None,
