@@ -21,13 +21,7 @@ use crate::widgets::register;
 /// Thumbnail render size (pixels, long edge) for a cell of `pts` points.
 fn thumb_px(pts: f32, ppp: f32) -> usize {
     let px = (pts * ppp).ceil() as usize;
-    if px <= 256 {
-        256
-    } else if px <= 384 {
-        384
-    } else {
-        512
-    }
+    lightcraft_engine::media::thumb_bucket(px.max(256))
 }
 
 /// Counters of the grid's work, cumulative over frames (benchmarks and tests: an unchanged frame

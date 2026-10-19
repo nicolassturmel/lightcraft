@@ -1,6 +1,6 @@
 # Lightroom parity checklist
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-17 · **Change:** minor (PhotoKit EXIF recovery and honest Photos metadata coverage) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (local Photos preview quality and Retina grid sizing) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 The measured, row-by-row checklist: one row per Lightroom feature, menu item and shortcut, what we
 have and what is missing. It answers *does the feature exist?* (feature breadth). Whether it is good
@@ -122,7 +122,7 @@ differences and missing bindings are in [ui-parity.md](ui-parity.md#shortcuts).
 
 | Id | Feature | Tier | Status | Evidence | Missing / notes |
 |---|---|---|---|---|---|
-| LR-VIEW-PHOTOGRID | Justified photo grid | P0 | ✅ | `cmd:view.photoGrid`, `cmd:library.groups`, `cmd:library.sort` (`group`), `crates/ui-egui/src/panels/grid.rs`, `crates/catalog/src/dates.rs` | grouped by capture / import / edit date (day headers “Wednesday, 30 September 2026 · 12 photos”, months or years when zoomed out, or a fixed day/month/year/none choice in the sort menu); sticky header; clicking a header selects its photos; stacks never split; scrolls to the active photo only when it changes (or the grid comes back on screen), never on its own |
+| LR-VIEW-PHOTOGRID | Justified photo grid | P0 | ✅ | `cmd:view.photoGrid`, `cmd:library.groups`, `cmd:library.sort` (`group`), `crates/ui-egui/src/panels/grid.rs`, `crates/catalog/src/dates.rs` | grouped by capture / import / edit date (day headers “Wednesday, 30 September 2026 · 12 photos”, months or years when zoomed out, or a fixed day/month/year/none choice in the sort menu); sticky header; clicking a header selects its photos; stacks never split; scrolls to the active photo only when it changes (or the grid comes back on screen), never on its own; grid thumbnail buckets cover Retina cells up to 1024 physical pixels. Mac Photos requests high-quality local renditions, with a smaller local fallback and no network/original retrieval (APPLE.16) |
 | LR-VIEW-SQUAREGRID | Square grid | P0 | ✅ | `cmd:view.squareGrid` | same date headers as the photo grid |
 | LR-VIEW-DETAIL | Single-photo view | P0 | ✅ | `cmd:view.detail`, `crates/ui-egui/src/panels/detail.rs` | |
 | LR-VIEW-EDIT | Edit view | P0 | ✅ | `cmd:panel.edit` | |
@@ -774,6 +774,7 @@ Latin stays upright. Advanced Japanese composition remains open. Regression cove
 
 ## Revision history
 
+- 2026-10-19: APPLE.16 improves local PhotoKit preview quality and grid sizing up to 1024 physical pixels, preserving source/revision caching and the explicit-original boundary. Feature breadth and readiness unchanged.
 - 2026-10-17: APPLE.15 recovers local Photos capture EXIF for Info, All Metadata and exports with source-bound caching, no automatic iCloud access, and metadata-policy checks. Full EXIF/IPTC row is partial for Photos coverage; broader readiness unchanged.
 
 - 2026-10-16: APPLE.14 bounds PhotoKit adjustment metadata, retains large recipes in immutable local snapshots and verifies references on reopening; oversized native requests return errors instead of terminating the worker. System-library coverage remains partial and scores unchanged.

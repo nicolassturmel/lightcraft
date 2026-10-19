@@ -1212,6 +1212,39 @@ mod tests {
     }
 
     #[test]
+    fn retina_photos_previews_keep_fine_detail_and_reuse_one_browsing_source() {
+        let mut s = photos_session();
+        let id = s.active().unwrap();
+        // Two-pixel stripes disappear when a 1024-pixel grid cell is served a 512-pixel proxy.
+        let image = Arc::new(lightcraft_raster::Rgba8 {
+            width: 1024,
+            height: 768,
+            data: (0..1024 * 768).map(|i| if i % 4 < 2 { [240, 230, 220, 255] } else { [20, 30, 40, 255] }).collect(),
+        });
+        let job = s.thumb_job(id, 1024).unwrap();
+        let quick = s.photos_grid_preview_job(&job).unwrap();
+        let source = quick.photos_preview.as_ref().unwrap();
+        let source_key = source.cache_key;
+        source.cache.put(source_key, image.clone());
+        let result = quick.run();
+        assert_eq!(result.rendered.unwrap().image, *image, "Retina grid keeps all local preview detail");
+        assert!(result.loaded.is_none(), "a browsing rendition must never become an original");
+        s.execute("develop.set", &json!({"control":"light.exposure","value":0.5})).unwrap();
+        for (size, expected) in [(128, (128, 96)), (512, (512, 384)), (768, (768, 576)), (1024, (1024, 768))] {
+            let job = s.thumb_job(id, size).unwrap();
+            let quick = s.photos_grid_preview_job(&job).unwrap();
+            assert_eq!(quick.photos_preview.as_ref().unwrap().cache_key, source_key);
+            let result = quick.run();
+            let pixels = result.rendered.unwrap().image;
+            assert_eq!((pixels.width, pixels.height), expected);
+            assert!(result.loaded.is_none());
+        }
+        for level in [SourceLevel::Thumb, SourceLevel::Preview, SourceLevel::Full] {
+            assert!(!s.media.has_source(id, level), "size changes must not fetch an original");
+        }
+    }
+
+    #[test]
     fn repeated_develop_changes_render_from_the_cached_original_without_photokit() {
         let mut s = photos_session();
         let id = s.active().unwrap();

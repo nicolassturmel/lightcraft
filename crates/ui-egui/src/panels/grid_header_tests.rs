@@ -2,6 +2,16 @@ use egui::{Rect, vec2};
 
 use crate::{LightcraftApp, Services, headless::HeadlessView, i18n::Locale};
 
+#[test]
+fn grid_thumbnails_cover_retina_cells_in_physical_pixels() {
+    for (points, scale, expected) in [(220.0, 1.0, 256), (330.0, 1.0, 384), (330.0, 2.0, 768), (500.0, 2.0, 1024)] {
+        let edge = super::thumb_px(points, scale);
+        assert_eq!(edge, expected);
+        assert!(edge as f32 >= points * scale, "a grid cell must not stretch a smaller proxy");
+    }
+    assert_eq!(super::thumb_px(10000.0, 4.0), 1024, "oversized cells keep the browsing budget bounded");
+}
+
 /// Issue #538: a breadcrumb opens its folder spelled as the path is, keeping a UNC share's leading
 /// `\\` and giving a bare drive its root back.
 #[test]

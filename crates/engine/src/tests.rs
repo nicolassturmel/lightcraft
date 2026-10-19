@@ -716,7 +716,7 @@ fn build_previews_fills_the_cache() {
     let mut s = demo();
     let ids: Vec<u64> = s.catalog.photos().take(3).map(|p| p.id.0).collect();
     let cached = |s: &mut Session, id: u64| {
-        let t = s.thumb_job(PhotoId(id), 512).unwrap();
+        let t = s.thumb_job(PhotoId(id), 1024).unwrap();
         let (c, k) = t.cache.clone().unwrap();
         let q = s.quick_view_job(PhotoId(id), 1024, true).unwrap();
         let (vc, vk) = q.cached[0].clone();

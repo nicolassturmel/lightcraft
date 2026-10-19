@@ -65,10 +65,13 @@ impl SettingsHashes {
 pub const RENDER_CACHE_VERSION: u64 = 51;
 
 /// Thumbnails render at one of these long edges (so window/cell size changes reuse the cache).
-pub const THUMB_SIZES: [usize; 4] = [128, 256, 384, 512];
+pub const THUMB_SIZES: [usize; 6] = [128, 256, 384, 512, 768, 1024];
+
+/// A local PhotoKit rendition shared by filmstrip and Retina grid sizes, never an original.
+const PHOTOS_PREVIEW_EDGE: usize = 1024;
 
 pub fn thumb_bucket(long_edge: usize) -> usize {
-    THUMB_SIZES.iter().copied().find(|s| *s >= long_edge).unwrap_or(512)
+    THUMB_SIZES.iter().copied().find(|s| *s >= long_edge).unwrap_or(1024)
 }
 
 /// Memory budgets.
@@ -963,7 +966,7 @@ impl PhotosPreview {
                 if let Some(error) = guard.errors.get(&failure_key) {
                     return Err(error.clone());
                 }
-                let image = match crate::apple::preview_photo(&self.asset, 512) {
+                let image = match crate::apple::preview_photo(&self.asset, PHOTOS_PREVIEW_EDGE) {
                     Ok(image) => Arc::new(image),
                     Err(error) => {
                         if guard.errors.len() >= 128
@@ -985,7 +988,7 @@ impl PhotosPreview {
         // Display-only resampling; these gamma-encoded pixels never feed develop or export.
         let input =
             lightcraft_raster::Image { width: image.width, height: image.height, data: image.data.iter().map(|p| p.map(f32::from)).collect() };
-        let small = lightcraft_raster::resample::fit(&input, self.edge, self.edge, lightcraft_raster::resample::Filter::Bilinear);
+        let small = lightcraft_raster::resample::fit(&input, self.edge, self.edge, lightcraft_raster::resample::Filter::Lanczos3);
         Ok(Rgba8 {
             width: small.width,
             height: small.height,
@@ -1358,7 +1361,7 @@ impl crate::Session {
     /// render, else the embedded preview of an unedited raw, else a cached or fresh thumbnail.
     pub fn quick_view_job(&mut self, id: PhotoId, max_edge: usize, apply_crop: bool) -> Option<QuickJob> {
         let p = self.catalog.photo(id)?.clone();
-        let small = self.thumb_job(id, THUMB_SIZES[THUMB_SIZES.len() - 1])?;
+        let small = self.thumb_job(id, SourceLevel::Thumb.max_edge())?;
         // (the thumbnail job itself starts with the cached thumbnail, after the sharper embedded preview)
         let cached = vec![(self.media.rendered.clone(), Self::view_key(&p, apply_crop))];
         let h = Hasher128::new().str(&content_key(&p)).str("quick").u64(p.develop.hash64()).u64(apply_crop as u64).finish();
@@ -1375,7 +1378,11 @@ impl crate::Session {
             return None;
         }
         let cache = self.media.rendered.clone();
-        let cache_key = Hasher128::new().str("Photos browsing pixels v1").str(&content_key(self.catalog.photo(job.photo)?)).u64(512).finish();
+        let cache_key = Hasher128::new()
+            .str("Photos browsing pixels v2 high quality")
+            .str(&content_key(self.catalog.photo(job.photo)?))
+            .u64(PHOTOS_PREVIEW_EDGE as u64)
+            .finish();
         Some(QuickJob {
             request_id: 0,
             photo: job.photo,
@@ -1384,7 +1391,7 @@ impl crate::Session {
             embedded: None,
             photos_preview: Some(PhotosPreview {
                 asset: asset.clone(),
-                edge: job.request.max_w.max(job.request.max_h).clamp(1, 512),
+                edge: job.request.max_w.max(job.request.max_h).clamp(1, PHOTOS_PREVIEW_EDGE),
                 generation: cache.generation(),
                 cache,
                 cache_key,

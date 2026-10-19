@@ -149,7 +149,11 @@ on the manual action. No original is retrieved except the one explicitly request
 
 The grid and filmstrip show locally cached, rendered **Photos previews** via
 `PHImageManager.requestImage`, with network access disabled. Browsing does not retrieve RAW
-resources. These thumbnails never become development or export sources, so they cannot replace
+resources. APPLE.16 requests a high-quality, exactly sized local rendition instead of permanently
+caching PhotoKit's fastest degraded thumbnail. When the larger rendition is unavailable locally,
+the smaller cached Photos thumbnail remains a fallback, without an iCloud download. Grid sizes
+account for physical pixels on Retina displays, up to a bounded 1024-pixel long edge.
+These thumbnails never become development or export sources, so they cannot replace
 original pixels or apply baked Photos adjustments twice. A cached LightCraft render is preferred
 when available. After downloading an original, the grid renders the current LightCraft edits
 from the genuine cached original, even when its separate thumbnail-level source was evicted.
@@ -162,8 +166,9 @@ service alive. **Refresh Photos** explicitly reconnects a failed service; closin
 both helpers. `ui.inspect.applePhotos.services` reports the PID, process starts and request count.
 
 Locally rendered browsing pixels have a bounded memory cache keyed only by the asset identifier,
-Photos source revision and a canonical 512-pixel size. Grid/filmstrip sizes reuse and resample
-those pixels. Settings, slider changes and changes to other photos never invalidate that source
+Photos source revision and a canonical 1024-pixel size. Grid/filmstrip sizes reuse and resample
+those pixels with Lanczos filtering; a new cache version excludes the former degraded previews.
+Settings, slider changes and changes to other photos never invalidate that source
 cache or trigger another PhotoKit read. Concurrent misses are coalesced. Unavailable previews also
 have a bounded failure cache, so
 retouches never retry every cloud-only image. Refresh Photos explicitly retries failures without

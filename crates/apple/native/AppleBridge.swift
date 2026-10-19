@@ -340,25 +340,35 @@ func photosAsset(_ id: String) throws -> PHAsset {
     return asset
 }
 
-// Library thumbnails use Photos' rendered preview, never the RAW resource or iCloud network.
-func previewPhotos(_ request: Request) async throws -> [String: Any] {
-    _ = try await authorizePhotos()
-    let asset = try photosAsset(required(request.asset, "asset"))
-    let edge = request.maxEdge ?? 512
-    guard edge > 0, edge <= 1024 else { throw BridgeError("Invalid Photos thumbnail size") }
+// Both delivery modes call back once. Never cache an opportunistic first, degraded callback as
+// the final preview. A high-quality local rendition is preferred; cloud-only photos can still
+// fall back to their smaller cached thumbnail without enabling network access.
+func localPhotosPreview(_ asset: PHAsset, edge: Int, delivery: PHImageRequestOptionsDeliveryMode) async throws -> NSImage {
     let options = PHImageRequestOptions()
     options.version = .current
-    options.deliveryMode = .fastFormat // Exactly one callback; locally cached degraded previews are welcome.
-    options.resizeMode = .fast
+    options.deliveryMode = delivery
+    options.resizeMode = .exact
     options.isNetworkAccessAllowed = false
-    let image: NSImage = try await withCheckedThrowingContinuation { continuation in
+    return try await withCheckedThrowingContinuation { continuation in
         PHImageManager.default().requestImage(for: asset, targetSize: CGSize(width: edge, height: edge),
             contentMode: .aspectFit, options: options) { image, info in
-            if let image { continuation.resume(returning: image) }
+            if (info?[PHImageCancelledKey] as? Bool) == true { continuation.resume(throwing: BridgeError("Photos preview cancelled")) }
+            else if let image { continuation.resume(returning: image) }
             else if let error = info?[PHImageErrorKey] as? Error { continuation.resume(throwing: error) }
             else { continuation.resume(throwing: BridgeError("No local Photos preview. Click Download original for this photo.")) }
         }
     }
+}
+
+// Library thumbnails use Photos' rendered preview, never the RAW resource or iCloud network.
+func previewPhotos(_ request: Request) async throws -> [String: Any] {
+    _ = try await authorizePhotos()
+    let asset = try photosAsset(required(request.asset, "asset"))
+    let edge = request.maxEdge ?? 1024
+    guard edge > 0, edge <= 1024 else { throw BridgeError("Invalid Photos thumbnail size") }
+    let image: NSImage
+    do { image = try await localPhotosPreview(asset, edge: edge, delivery: .highQualityFormat) }
+    catch { image = try await localPhotosPreview(asset, edge: edge, delivery: .fastFormat) }
     guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
           let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB) else {
         throw BridgeError("Photos supplied an unreadable preview")
