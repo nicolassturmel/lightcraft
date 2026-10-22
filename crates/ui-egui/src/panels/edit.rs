@@ -5,7 +5,6 @@ use egui::epaint::{Mesh, Vertex};
 use egui::{Align2, Color32, Pos2, Rect, RichText, Sense, Stroke, pos2, vec2};
 use lightcraft_catalog::PhotoId;
 use lightcraft_develop::{ControlSpec, DevelopSettings, Section, Track, WbMode, controls};
-use lightcraft_geom::Point;
 use serde_json::{Value, json};
 
 use crate::LightcraftApp;
@@ -682,29 +681,10 @@ fn curve_editor(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, d: &Dev
         });
     });
     let ch = app.ui.curve_channel.clone();
-    let w = ui.available_width();
-    let side = (w - 48.0).max(80.0);
-    let (outer, _) = ui.allocate_exact_size(vec2(w, side + 12.0), Sense::hover());
-    let r = Rect::from_min_size(pos2(outer.left() + 24.0, outer.top() + 6.0), vec2(side, side));
-    let resp = ui.interact(r, egui::Id::new(("curve", &ch)), Sense::click_and_drag());
-    register(ui.ctx(), "curve", r);
+    let (r, resp) = super::curve_graph::canvas(ui, "curve");
     resp.context_menu(|ui| curve_reset_menu(app, ui, &ch));
     let p = ui.painter();
-    p.rect_filled(r, 2.0, t.canvas);
-    for i in 1..4 {
-        let f = i as f32 / 4.0;
-        p.line_segment(
-            [pos2(r.left() + r.width() * f, r.top()), pos2(r.left() + r.width() * f, r.bottom())],
-            Stroke::new(1.0, Color32::from_gray(52)),
-        );
-        p.line_segment(
-            [pos2(r.left(), r.top() + r.height() * f), pos2(r.right(), r.top() + r.height() * f)],
-            Stroke::new(1.0, Color32::from_gray(52)),
-        );
-    }
-    p.line_segment([r.left_bottom(), r.right_top()], Stroke::new(1.0, Color32::from_gray(70)));
     let to_screen = |x: f64, y: f64| pos2(r.left() + x as f32 * r.width(), r.bottom() - y as f32 * r.height());
-    let from_screen = |q: Pos2| (((q.x - r.left()) / r.width()).clamp(0.0, 1.0) as f64, ((r.bottom() - q.y) / r.height()).clamp(0.0, 1.0) as f64);
     if ch == "parametric" {
         // draw the effective parametric curve by sampling the pipeline's region curve approximation
         let c = &d.curve;
@@ -734,120 +714,23 @@ fn curve_editor(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, d: &Dev
         control(app, ui, d, "curve.refineSaturation", true);
         return;
     }
-    let pts_of = |d: &DevelopSettings| -> Vec<Point> {
-        let v = match ch.as_str() {
-            "red" => &d.curve.red,
-            "green" => &d.curve.green,
-            "blue" => &d.curve.blue,
-            _ => &d.curve.master,
-        };
-        if v.is_empty() { vec![Point::new(0.0, 0.0), Point::new(1.0, 1.0)] } else { v.clone() }
+    let points = match ch.as_str() {
+        "red" => &d.curve.red,
+        "green" => &d.curve.green,
+        "blue" => &d.curve.blue,
+        _ => &d.curve.master,
     };
-    let pts = pts_of(d);
-    let curve = lightcraft_color::spline::MonotoneCurve::new(&pts.iter().map(|q| (q.x, q.y)).collect::<Vec<_>>());
-    let color = match ch.as_str() {
-        "red" => hex("#dd3333"),
-        "green" => hex("#33bb55"),
-        "blue" => hex("#3377ee"),
-        _ => Color32::from_gray(225),
-    };
-    let line: Vec<Pos2> = (0..=96).map(|i| to_screen(i as f64 / 96.0, curve.eval(i as f64 / 96.0).clamp(0.0, 1.0))).collect();
-    p.add(egui::Shape::line(line, Stroke::new(2.0, color)));
-    // interaction: drag a point (both axes, between its neighbours), drag empty space to add and
-    // drag a new point, click empty space to add, double-click a point to delete it
-    let drag_id = egui::Id::new(("curve-drag", &ch));
-    // the point being dragged (stored as `Option<usize>` so a stale value can be cleared)
-    let mut dragging: Option<usize> = ui.data(|dd| dd.get_temp::<Option<usize>>(drag_id)).flatten();
-    let nearest = |q: Pos2| pts.iter().enumerate().map(|(i, p)| (i, to_screen(p.x, p.y).distance(q))).min_by(|a, b| a.1.total_cmp(&b.1));
-    let hovered = resp.hover_pos().and_then(nearest).filter(|(_, dist)| *dist < 10.0).map(|(i, _)| i);
-    if dragging.is_some() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-    } else if hovered.is_some() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-    }
-    for (i, q) in pts.iter().enumerate() {
-        let c = to_screen(q.x, q.y);
-        if dragging == Some(i) || (dragging.is_none() && hovered == Some(i)) {
-            p.circle_filled(c, 5.5, color);
-            p.circle_stroke(c, 5.5, Stroke::new(1.0, t.canvas));
-        } else {
-            p.circle_filled(c, 4.0, color);
-        }
-    }
-    // input / output readout of the point being dragged (0–255 like the histogram)
-    if let Some(q) = dragging.and_then(|i| pts.get(i)) {
-        p.text(
-            r.left_top() + vec2(6.0, 4.0),
-            egui::Align2::LEFT_TOP,
-            format!("{} / {}", (q.x * 255.0).round(), (q.y * 255.0).round()),
-            t.font(11.0),
-            t.text_dim,
-        );
-    }
-    let mut new_pts = None;
-    if resp.double_clicked()
-        && let Some(q) = resp.interact_pointer_pos()
-        && let Some((i, dist)) = nearest(q)
-        && dist < 10.0
-        && i != 0
-        && i != pts.len() - 1
-    {
-        let mut v = pts.clone();
-        v.remove(i);
-        new_pts = Some(v);
-    } else if resp.drag_started()
-        && let Some(q) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
-    {
-        // pick the point under the press, not where the pointer is once the drag threshold passed
+    let edit = super::curve_graph::points(ui, r, &resp, &ch, points);
+    if edit.started {
         let _ = app.run("develop.beginInteraction", json!({"label": "Tone Curve"}));
-        match nearest(q) {
-            Some((i, dist)) if dist < 10.0 => dragging = Some(i),
-            _ => {
-                let (x, y) = from_screen(q);
-                let mut v = pts.clone();
-                let i = v.iter().position(|p| p.x > x).unwrap_or(v.len());
-                v.insert(i, Point::new(x, y));
-                dragging = Some(i);
-                new_pts = Some(v);
-            }
-        }
-    } else if resp.dragged()
-        && let (Some(i), Some(q)) = (dragging, resp.interact_pointer_pos())
-    {
-        let (mut x, y) = from_screen(q);
-        let mut v = pts.clone();
-        if i < v.len() {
-            let lo = if i == 0 { 0.0 } else { v[i - 1].x + 0.01 };
-            let hi = if i + 1 >= v.len() { 1.0 } else { v[i + 1].x - 0.01 };
-            if i == 0 {
-                x = x.min(hi);
-            } else if i + 1 == v.len() {
-                x = x.max(lo);
-            } else {
-                x = x.clamp(lo, hi);
-            }
-            v[i] = Point::new(x, y);
-            new_pts = Some(v);
-        }
-    } else if resp.clicked()
-        && let Some(q) = resp.interact_pointer_pos()
-        && nearest(q).is_none_or(|(_, dist)| dist >= 10.0)
-    {
-        let (x, y) = from_screen(q);
-        let mut v = pts.clone();
-        let i = v.iter().position(|p| p.x > x).unwrap_or(v.len());
-        v.insert(i, Point::new(x, y));
-        new_pts = Some(v);
     }
-    if let Some(v) = new_pts {
-        let arr: Vec<[f64; 2]> = v.iter().map(|p| [p.x, p.y]).collect();
-        let _ = app.run("develop.curve", json!({"channel": ch, "points": arr}));
+    if let Some(points) = edit.points {
+        let points: Vec<[f64; 2]> = points.iter().map(|p| [p.x, p.y]).collect();
+        let _ = app.run("develop.curve", json!({"channel": ch, "points": points}));
     }
-    if resp.drag_stopped() {
-        dragging = None;
+    if edit.stopped {
         let _ = app.run("develop.endInteraction", json!({}));
     }
-    ui.data_mut(|dd| dd.insert_temp(drag_id, dragging));
     curve_footer(app, ui, d);
     control(app, ui, d, "curve.refineSaturation", true);
     let _ = id;

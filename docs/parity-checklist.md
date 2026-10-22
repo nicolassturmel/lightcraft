@@ -1,6 +1,6 @@
 # Lightroom parity checklist
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (local Photos preview quality and Retina grid sizing) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (per-mask RGB curves; breadth and readiness unchanged) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 The measured, row-by-row checklist: one row per Lightroom feature, menu item and shortcut, what we
 have and what is missing. It answers *does the feature exist?* (feature breadth). Whether it is good
@@ -300,7 +300,7 @@ differences and missing bindings are in [ui-parity.md](ui-parity.md#shortcuts).
 | LR-MASK-INVERT | Invert | P0 | ✅ | `cmd:mask.invert` | |
 | LR-MASK-AMOUNT | Mask amount | P1 | ✅ | `cmd:mask.adjust` (`amount`), `crates/ui-egui/src/panels/masking.rs` | |
 | LR-MASK-FEATHER-EDGE | Refine mask edges | P2 | ✅ | `cmd:mask.refine`, `crates/pipeline/src/masks.rs` (`evaluate_one`) | Refine Edges slider per mask: guided filter on the photo's luminance snaps soft mask edges to the photo's edges (rendered on the CPU) |
-| LR-MASK-SLIDERS | Local adjustment sliders | P0 | ✅ | `cmd:mask.adjust`, `crates/pipeline/src/finish.rs` | every slider renders (CPU + GPU), incl. Noise, Moiré, Defringe (negative Defringe has no effect); no local curve or effect presets |
+| LR-MASK-SLIDERS | Local adjustment sliders | P0 | ✅ | `cmd:mask.adjust`, `cmd:mask.curve`, `cmd:mask.curve.reset`, `crates/ui-egui/src/panels/mask_curve.rs`, `crates/pipeline/src/finish.rs` | every slider renders (CPU + GPU), incl. Noise, Moiré, Defringe (negative Defringe has no effect); per-mask RGB/master and individual R/G/B point curves, Refine Saturation, per-channel/all reset, one undo step per drag. Curves use mask coverage/Amount, are saved in the adjustment description, and share preview/export rendering; no local effect presets (MASK.1) |
 | LR-MASK-OVERLAY | Mask overlay | P0 | ✅ | `cmd:view.maskOverlay`, `cmd:view.maskOverlayMode`, `cmd:view.maskOverlayColor`, `crates/pipeline/src/visualize.rs` | rendered alpha of the selected mask (CPU + GPU): colour, colour on B&W, image on black/white, white on black; ⇧O cycles while masking; successful local adjustments (including Amount) hide the overlay until manually shown again with O / the eye; shape/edge edits retain it; no auto-show on hover |
 | LR-MASK-PINS | Pins | P1 | ✅ | `cmd:view.maskPins`, `crates/ui-egui/src/panels/detail.rs` | a pin per radial/linear/brush component: click selects its mask, drag moves it; no pins for range/AI components, no Auto mode |
 | LR-MASK-UPDATE | Recompute AI masks | P2 | ⬜ | | |
@@ -774,6 +774,7 @@ Latin stays upright. Advanced Japanese composition remains open. Regression cove
 
 ## Revision history
 
+- 2026-10-22: MASK.1 adds independent per-mask RGB point curves with shared global/local point interaction, CPU/GPU rendering, undo/reset and description persistence. Neutral legacy masks keep their serialized settings and rendering. Breadth and readiness unchanged.
 - 2026-10-19: APPLE.16 improves local PhotoKit preview quality and grid sizing up to 1024 physical pixels, preserving source/revision caching and the explicit-original boundary. Feature breadth and readiness unchanged.
 - 2026-10-17: APPLE.15 recovers local Photos capture EXIF for Info, All Metadata and exports with source-bound caching, no automatic iCloud access, and metadata-policy checks. Full EXIF/IPTC row is partial for Photos coverage; broader readiness unchanged.
 

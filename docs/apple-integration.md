@@ -416,3 +416,18 @@ API references: [PhotoKit](https://developer.apple.com/documentation/photos),
 [Vision instance labels](https://developer.apple.com/documentation/vision/vninstancemaskobservation/instancemask),
 [Apple semantic segmentation sample](https://developer.apple.com/documentation/coreml/using-core-ml-for-semantic-image-segmentation),
 [Apple model and licence](https://huggingface.co/apple/coreml-detr-semantic-segmentation).
+
+## Curves inside a mask
+
+Select a mask and expand **Curve** above its local sliders. The white/RGB control edits the
+master point curve; red, green and blue edit their own channel. Click to add a point, drag it in
+either direction, double-click an interior point to remove it. Double-click a channel to reset
+only that channel; **Reset** resets this mask's curves. Refine Saturation controls the colour
+increase from contrast curves. A point drag is one undo step and hides the selection overlay.
+
+These curves live in `masks[].curve` in the original-safe adjustment JSON, including Photos copy
+recipes, duplication and history. Legacy masks without this field stay neutral and serialize
+without an added default curve. The desktop and Web view share the same editor and engine.
+Curves blend in stored mask order after the global curves and before grain, through the mask's
+coverage and Amount; CPU, GPU and high-bit-depth exports use the same curve tables. No original
+resource access or Apple mask inference is needed to change a curve on a cached source.

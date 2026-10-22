@@ -17,6 +17,8 @@ const FIELDS: &[(&str, usize)] = &[
     ("SRGB_OFF", 1),
     ("CURVE_OFF", 1),
     ("CURVES", 1),
+    ("MASK_CURVES", 1),
+    ("MASK_CURVE_OFF", 1),
     ("GAIN", 1),
     ("EV", 1),
     ("AIR", 1),
@@ -156,6 +158,22 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], present: &Pr
     for m in masks {
         aux.extend_from_slice(m);
     }
+    let mask_curve_off = aux.len();
+    let mask_curves = fp.mask_curves.iter().any(Option::is_some);
+    if mask_curves {
+        // Fixed-stride records avoid lossy floating-point table offsets. Identity masks have
+        // an empty record, so the table order stays identical to the alpha-plane order.
+        for i in 0..masks.len() {
+            if let Some(Some(curve)) = fp.mask_curves.get(i) {
+                aux.extend_from_slice(&[1.0, curve.refine_sat]);
+                for lut in &curve.luts {
+                    aux.extend_from_slice(&lut.v);
+                }
+            } else {
+                aux.resize(aux.len() + 2 + 3 * CURVE_N as usize, 0.0);
+            }
+        }
+    }
 
     let mut p = Block::new();
     p.u("W", fp.w as u32);
@@ -165,6 +183,8 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], present: &Pr
     p.u("SRGB_OFF", srgb_off as u32);
     p.u("CURVE_OFF", curve_off as u32);
     p.b("CURVES", fp.curves.is_some());
+    p.b("MASK_CURVES", mask_curves);
+    p.u("MASK_CURVE_OFF", mask_curve_off as u32);
     p.f("REFINE_SAT", fp.refine_sat);
     p.f("GAIN", fp.gain);
     p.f("EV", fp.ev);

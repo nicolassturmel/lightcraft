@@ -41,6 +41,10 @@ fn encode_srgb(v: f32) -> f32 {
 
 fn curve(ch: u32, x: f32) -> f32 {
     let o = pu(F_CURVE_OFF) + ch * CURVE_N;
+    return curve_at(o, x);
+}
+
+fn curve_at(o: u32, x: f32) -> f32 {
     let f = clamp(x, 0.0, 1.0) * f32(CURVE_N - 1u);
     let i = min(u32(f), CURVE_N - 2u);
     let t = f - f32(i);
@@ -496,6 +500,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let rs = pf(F_REFINE_SAT);
         if (rs < 1.0) {
             e = refine_saturation(e0, e, rs);
+        }
+    }
+    if (pu(F_MASK_CURVES) != 0u) {
+        for (var m = 0u; m < pu(F_NMASK); m++) {
+            let o = pu(F_MASK_CURVE_OFF) + m * (2u + 3u * CURVE_N);
+            let alpha = masks[m * n + i];
+            if (aux[o] == 0.0 || alpha <= 0.0) { continue; }
+            let before = e;
+            var after = vec3<f32>(
+                curve_at(o + 2u, e.x),
+                curve_at(o + 2u + CURVE_N, e.y),
+                curve_at(o + 2u + 2u * CURVE_N, e.z));
+            let refine = aux[o + 1u];
+            if (refine < 1.0) { after = refine_saturation(before, after, refine); }
+            e = before + (after - before) * alpha;
         }
     }
     if (pu(F_GRAIN) != 0u) {

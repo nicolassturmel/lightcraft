@@ -161,6 +161,34 @@ fn find(masks: &mut [Mask], id: u32, c: &str) -> Result<usize> {
     masks.iter().position(|m| m.id == id).ok_or_else(|| bad(c, format!("no mask {id}")))
 }
 
+fn curve_mask_id(s: &Session, p: &Value, command: &str) -> Result<u32> {
+    match p.get("id") {
+        Some(value) => value.as_u64().and_then(|v| u32::try_from(v).ok()).ok_or_else(|| bad(command, "invalid mask id")),
+        None => s.active_mask.ok_or_else(|| bad(command, "no mask selected (give `id`)")),
+    }
+}
+
+fn curve_points(value: &Value) -> Result<Vec<Point>> {
+    const C: &str = "mask.curve";
+    let input = value.as_array().ok_or_else(|| bad(C, "points must be an array"))?;
+    if input.len() > 64 || input.len() == 1 {
+        return Err(bad(C, "a curve needs 2–64 points, or [] to reset it"));
+    }
+    let mut points = Vec::with_capacity(input.len());
+    for point in input {
+        let pair = point.as_array().filter(|p| p.len() == 2).ok_or_else(|| bad(C, "each point must be [x, y]"))?;
+        let number =
+            |i| pair.get(i).and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or_else(|| bad(C, "curve coordinates must be finite numbers"));
+        points.push(Point::new(number(0)?.clamp(0.0, 1.0), number(1)?.clamp(0.0, 1.0)));
+    }
+    points.sort_by(|a, b| a.x.total_cmp(&b.x));
+    points.dedup_by(|a, b| (a.x - b.x).abs() < 1e-6);
+    if points.len() == 1 {
+        return Err(bad(C, "curve points need different input coordinates"));
+    }
+    Ok(points)
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -555,6 +583,61 @@ pub fn specs() -> Vec<CommandSpec> {
                     let a: LocalAdjustments = serde_json::from_value(v).map_err(|e| bad("mask.adjust", e.to_string()))?;
                     masks[i].adjust = clamp_local(a);
                     Ok(())
+                })
+            }
+        ),
+        cmd!(
+            "mask.curve",
+            "Set Mask Curve",
+            [],
+            None,
+            "{id?, channel?: master|red|green|blue, points?: [[x,y],...] (2–64, [] resets), refineSaturation?: 0..100} — the selected mask's local curve",
+            has_active,
+            |s, p| {
+                const C: &str = "mask.curve";
+                let mid = curve_mask_id(s, p, C)?;
+                let points = p.get("points").map(curve_points).transpose()?;
+                let refine = p
+                    .get("refineSaturation")
+                    .map(|v| v.as_f64().filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 100.0)).ok_or_else(|| bad(C, "invalid Refine Saturation")))
+                    .transpose()?;
+                if points.is_none() && refine.is_none() {
+                    return Err(bad(C, "give points or refineSaturation"));
+                }
+                let channel = str_param(p, "channel").unwrap_or("master");
+                masks_edit(s, C, "Mask Curve", |masks, _| {
+                    let i = find(masks, mid, C)?;
+                    let curve = &mut masks[i].curve;
+                    if let Some(points) = points {
+                        match channel {
+                            "master" | "rgb" => curve.master = points,
+                            "red" => curve.red = points,
+                            "green" => curve.green = points,
+                            "blue" => curve.blue = points,
+                            other => return Err(bad(C, format!("unknown channel `{other}`"))),
+                        }
+                    }
+                    if let Some(value) = refine {
+                        curve.refine_saturation = value;
+                    }
+                    Ok(())
+                })
+            }
+        ),
+        cmd!(
+            "mask.curve.reset",
+            "Reset Mask Curve",
+            [],
+            None,
+            "{id?, channel?: all|master|red|green|blue (default all)} — reset this mask's curve without changing its shape or sliders",
+            has_active,
+            |s, p| {
+                const C: &str = "mask.curve.reset";
+                let mid = curve_mask_id(s, p, C)?;
+                let channel = str_param(p, "channel").unwrap_or("all");
+                masks_edit(s, C, "Reset Mask Curve", |masks, _| {
+                    let i = find(masks, mid, C)?;
+                    super::curves::reset_channel(&mut masks[i].curve, channel).map_err(|error| bad(C, error))
                 })
             }
         ),

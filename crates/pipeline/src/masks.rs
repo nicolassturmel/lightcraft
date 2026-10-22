@@ -110,13 +110,13 @@ fn smooth(e0: f32, e1: f32, x: f32) -> f32 {
 }
 
 /// The visible masks with components, evaluated in order (`mattes`: the source's, see [`Mattes`]).
+pub fn active(masks: &[Mask]) -> impl Iterator<Item = &Mask> {
+    masks.iter().filter(|m| m.visible && !m.components.is_empty())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn evaluate(masks: &[Mask], frame: &Frame, w: usize, h: usize, img: &Rgb32f, log_l: &Plane, ev: f32, mattes: Option<&Mattes>) -> Vec<Evaluated> {
-    masks
-        .iter()
-        .filter(|m| m.visible && !m.components.is_empty())
-        .map(|m| Evaluated { id: m.id, alpha: evaluate_one(m, frame, w, h, img, log_l, ev, mattes), adjust: m.adjust })
-        .collect()
+    active(masks).map(|m| Evaluated { id: m.id, alpha: evaluate_one(m, frame, w, h, img, log_l, ev, mattes), adjust: m.adjust }).collect()
 }
 
 /// The alpha plane of mask `m` (whether visible or not): its components combined, inverted and

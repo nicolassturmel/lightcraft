@@ -152,3 +152,74 @@ fn dragging_a_point_past_its_neighbour_is_clamped() {
     assert!(c[1].0 < c[2].0 && c[1].0 > 0.55, "clamped just left of its neighbour: {c:?}");
     assert_eq!(c[2], (0.6, 0.6), "the neighbour stays: {c:?}");
 }
+
+fn mask_curve_open() -> Headless {
+    let services = Services { png: None, ..Default::default() };
+    let app = LightcraftApp::new(lightcraft_engine::Session::with_demo(), services);
+    let mut h = Headless::new(app, [1200.0, 1500.0], 1.0);
+    exec(&mut h, "panel.masking", json!({}));
+    exec(&mut h, "mask.add", json!({"kind":"linear"}));
+    h.app.ui.view = crate::state::ViewMode::Detail;
+    h.app.ui.toggle_flyout("maskCurve");
+    h.step();
+    h.step();
+    h
+}
+
+#[test]
+fn masked_curve_drag_is_local_hides_overlay_and_is_one_undo_step() {
+    let mut h = mask_curve_open();
+    exec(&mut h, "develop.curve", json!({"channel":"blue","points":S_CURVE}));
+    exec(&mut h, "mask.curve", json!({"channel":"master","points":[[0,0],[0.5,0.5],[1,1]]}));
+    h.app.ui.mask_overlay = true;
+    h.step();
+    let before = develop(&h);
+    let undo = h.app.session.undo.len();
+    let widgets = h.request("ui.widgets", json!({"filter":"maskCurve"}), T);
+    let graph = widgets["result"].as_array().unwrap().iter().find(|w| w["id"] == "maskCurve").unwrap();
+    let side = graph["rect"][2].as_f64().unwrap();
+    let result = h.request("ui.dragWidget", json!({"id":"maskCurve","fx":0.5,"fy":0.5,"dx":-0.1*side,"dy":-0.2*side,"steps":12}), T);
+    assert_eq!(result["ok"], true, "{result}");
+    h.step();
+    let after = develop(&h);
+    assert_eq!(after.curve, before.curve, "global curve is independent");
+    assert!((after.masks[0].curve.master[1].x - 0.4).abs() < 0.03);
+    assert!((after.masks[0].curve.master[1].y - 0.7).abs() < 0.03);
+    assert_eq!(h.app.session.undo.len(), undo + 1);
+    assert!(!h.app.ui.mask_overlay, "curve feedback must not be covered by the red overlay");
+    exec(&mut h, "edit.undo", json!({}));
+    assert_eq!(develop(&h), before);
+    exec(&mut h, "edit.redo", json!({}));
+    assert_eq!(develop(&h), after);
+    click_widget(&mut h, "button:maskCurveReset", 1);
+    assert_eq!(develop(&h).masks[0].curve, lightcraft_develop::ToneCurve::default());
+    assert_eq!(develop(&h).curve, before.curve);
+}
+
+#[test]
+fn masked_curve_channels_reset_independently_and_invalid_edits_keep_overlay() {
+    let mut h = mask_curve_open();
+    for channel in ["red", "green"] {
+        exec(&mut h, "mask.curve", json!({"channel":channel,"points":S_CURVE}));
+    }
+    h.step();
+    click_widget(&mut h, "maskCurveChannel:red", 2);
+    let d = develop(&h);
+    assert!(d.masks[0].curve.red.is_empty());
+    assert_eq!(d.masks[0].curve.green.len(), 4);
+    h.app.ui.mask_overlay = true;
+    let error = h.app.run("mask.curve", json!({"channel":"yellow","points":S_CURVE}));
+    assert!(error.is_err());
+    assert!(h.app.ui.mask_overlay);
+}
+
+#[test]
+fn closely_spaced_curve_points_drag_without_panicking() {
+    let mut h = curve_open("red");
+    exec(&mut h, "develop.curve", json!({"channel":"red","points":[[0,0],[0.499,0.3],[0.5,0.6],[0.501,0.8],[1,1]]}));
+    h.step();
+    let result = h.request("ui.dragWidget", json!({"id":"curve","fx":0.5,"fy":0.4,"dx":10.0,"dy":-10.0,"steps":12}), T);
+    assert_eq!(result["ok"], true, "{result}");
+    let d = develop(&h);
+    assert!(d.curve.red.windows(2).all(|p| p[0].x < p[1].x));
+}

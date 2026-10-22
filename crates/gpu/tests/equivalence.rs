@@ -48,6 +48,47 @@ fn camera_tone_and_relative_wb() {
     check("camera chroma curve edited", &src, &info, &s, &RenderRequest::fit(320, 240));
 }
 
+#[test]
+fn masked_curves_match_cpu_with_hidden_masks_amount_and_refine_saturation() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(2, 320, 240);
+    let mut settings = DevelopSettings::default();
+    let linear = |id, from, to| Mask {
+        id,
+        components: vec![MaskComponent {
+            name: None,
+            op: MaskOp::Add,
+            invert: false,
+            shape: MaskShape::Linear { start: Point::new(from, 0.5), end: Point::new(to, 0.5) },
+        }],
+        ..Default::default()
+    };
+    let mut left = linear(1, 0.3, 0.7);
+    left.curve.master = vec![Point::new(0.0, 0.0), Point::new(0.5, 0.65), Point::new(1.0, 1.0)];
+    left.curve.blue = vec![Point::new(0.0, 0.04), Point::new(1.0, 0.93)];
+    left.curve.refine_saturation = 35.0;
+    let mut right = linear(2, 0.6, 0.4);
+    right.curve.red = vec![Point::new(0.0, 0.03), Point::new(0.6, 0.8), Point::new(1.0, 1.0)];
+    right.adjust.amount = 175.0;
+    let mut hidden = left.clone();
+    hidden.id = 3;
+    hidden.visible = false;
+    let empty = Mask { id: 4, curve: left.curve.clone(), ..Default::default() };
+    settings.masks = vec![hidden, linear(5, 0.2, 0.8), left, empty, right];
+    settings.curve.green = vec![Point::new(0.0, 0.0), Point::new(0.5, 0.53), Point::new(1.0, 1.0)];
+    let request = RenderRequest::fit(320, 240);
+    check("masked RGB curves", &src, &SourceInfo::default(), &settings, &request);
+    let cached = StageCache::default();
+    lightcraft_gpu::render(&src, &SourceInfo::default(), &settings, &request, Some(&cached)).unwrap();
+    settings.masks[2].curve.master[1].y = 0.75;
+    let after = lightcraft_gpu::render(&src, &SourceInfo::default(), &settings, &request, Some(&cached)).unwrap().image;
+    let cpu = render(&src, &SourceInfo::default(), &settings, &request).image;
+    let (mean, max, _) = diff(&cpu, &after);
+    assert!(mean < MEAN_LSB && max <= MAX_LSB, "cached masked curves: {mean}, {max}");
+}
+
 fn scene(i: usize, w: usize, h: usize) -> Arc<Rgb32f> {
     Arc::new(lightcraft_scenes::demo_library()[i].render(w, h))
 }

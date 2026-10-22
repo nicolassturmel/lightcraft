@@ -682,7 +682,7 @@ pub fn render(
     }
     // the alpha a mask overlay shows: copied out before the readback below submits
     let overlay_mask = req.overlay.mask(s).map(|m| {
-        let list = s.masks.iter().filter(|m| m.visible && !m.components.is_empty());
+        let list = lightcraft_pipeline::masks::active(&s.masks);
         match (list.map(|m| m.id).position(|id| id == m.id), masks.as_ref()) {
             (Some(mi), Some(all)) => Ok(cx.slice(all, mi * n, n)),
             _ => Err(m),
@@ -912,7 +912,7 @@ fn guided_cross_max(cx: &mut Cx<'_>, guide: &Buf, p: &Buf, w: usize, h: usize, s
 fn masks(cx: &mut Cx<'_>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Host) -> (Option<Buf>, Vec<[f32; MASK_TERMS]>) {
     use lightcraft_develop::{MaskOp, MaskShape};
     let s = &*plan.settings;
-    let list: Vec<_> = s.masks.iter().filter(|m| m.visible && !m.components.is_empty()).collect();
+    let list: Vec<_> = lightcraft_pipeline::masks::active(&s.masks).collect();
     if list.is_empty() {
         return (None, Vec::new());
     }

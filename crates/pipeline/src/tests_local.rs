@@ -46,6 +46,63 @@ fn chroma(p: [u8; 4]) -> f32 {
 }
 
 #[test]
+fn local_curves_respect_coverage_amount_visibility_and_channel() {
+    let src = Rgb32f::filled(W, H, [0.18; 3]);
+    let source_before = src.data.clone();
+    let base = shot(&src, &DevelopSettings::default());
+    let mut settings = left_mask(LocalAdjustments::default());
+    let neutral = shot(&src, &settings);
+    assert_eq!(neutral, base, "legacy/neutral masks keep their rendering");
+    settings.masks[0].curve.red = vec![Point::new(0.0, 0.0), Point::new(0.5, 0.62), Point::new(1.0, 1.0)];
+    let on = shot(&src, &settings);
+    let at = |image: &Rgba8, x: usize| image.data[H / 2 * W + x];
+    let (plain, altered) = (at(&base, 30), at(&on, 30));
+    assert!(altered[0] > plain[0] + 15, "red curve changes red within coverage");
+    assert_eq!(&altered[1..], &plain[1..], "other channels stay unchanged");
+    assert_eq!(at(&on, 200), at(&base, 200), "outside the mask stays bit-exact");
+    settings.masks[0].adjust.amount = 50.0;
+    let half = at(&shot(&src, &settings), 30)[0] as f64;
+    assert!((half - (f64::from(plain[0]) + f64::from(altered[0])) * 0.5).abs() <= 1.0);
+    settings.masks[0].adjust.amount = 0.0;
+    assert_eq!(shot(&src, &settings), base, "zero Amount switches the curve off");
+    settings.masks[0].adjust.amount = 100.0;
+    settings.masks[0].visible = false;
+    assert_eq!(shot(&src, &settings), base, "hidden curve switches off");
+    settings.masks[0].visible = true;
+    settings.masks[0].invert = true;
+    let inverted = shot(&src, &settings);
+    assert_eq!(at(&inverted, 30), at(&base, 30));
+    assert!(at(&inverted, 200)[0] > plain[0] + 15);
+    assert_eq!(src.data, source_before, "curves never modify the source pixels");
+}
+
+#[test]
+fn local_curves_rebuild_from_cached_source_and_match_deep_export() {
+    use crate::{DeepSamples, OutputDepth, StageCache, render_cached};
+    use std::sync::Arc;
+    let src = Arc::new(Rgb32f::from_fn(W, H, |x, _| [0.04 + 0.5 * x as f32 / W as f32; 3]));
+    let mut settings = left_mask(LocalAdjustments::default());
+    let req = RenderRequest::fit(W, H);
+    let cache = StageCache::default();
+    render_cached(&src, &SourceInfo::default(), &settings, &req, &cache);
+    settings.masks[0].curve.master = vec![Point::new(0.0, 0.02), Point::new(0.5, 0.65), Point::new(1.0, 1.0)];
+    settings.masks[0].curve.blue = vec![Point::new(0.0, 0.04), Point::new(1.0, 0.95)];
+    settings.masks[0].curve.refine_saturation = 40.0;
+    let cached = render_cached(&src, &SourceInfo::default(), &settings, &req, &cache).image;
+    assert_eq!(cached, shot(&src, &settings), "curve edits use fresh finish tables with the cached source");
+    let deep = render(&src, &SourceInfo::default(), &settings, &RenderRequest { depth: OutputDepth::U16, ..req }).deep.unwrap();
+    let DeepSamples::U16(samples) = deep.samples else {
+        panic!("16-bit export");
+    };
+    for (pixel, samples) in cached.data.iter().zip(samples.as_chunks::<3>().0) {
+        for channel in 0..3 {
+            let exported = (f64::from(samples[channel]) / 257.0).round() as u8;
+            assert!(pixel[channel].abs_diff(exported) <= 1, "preview and export follow the same masked curve");
+        }
+    }
+}
+
+#[test]
 fn local_noise_smooths_luminance_noise_inside_the_mask() {
     let src = Rgb32f::from_fn(W, H, |x, y| [0.18 * (1.0 + 0.12 * noise(x, y, 1)); 3]);
     let plain = shot(&src, &DevelopSettings::default());

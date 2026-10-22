@@ -330,6 +330,10 @@ impl Default for ToneCurve {
 }
 
 impl ToneCurve {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+
     pub fn point_curve_is_identity(pts: &[Point]) -> bool {
         pts.is_empty() || pts.iter().all(|p| (p.x - p.y).abs() < 1e-9)
     }
@@ -957,6 +961,9 @@ pub struct Mask {
     pub invert: bool,
     pub components: Vec<MaskComponent>,
     pub adjust: LocalAdjustments,
+    /// Display-domain curves blended only through this mask's coverage and Amount.
+    #[serde(skip_serializing_if = "ToneCurve::is_default")]
+    pub curve: ToneCurve,
     /// Refine Edges 0..100: the mask's edges snap to the photo's (guided filter).
     #[serde(skip_serializing_if = "is_zero")]
     pub refine: f64,
@@ -968,7 +975,16 @@ fn is_zero(v: &f64) -> bool {
 
 impl Default for Mask {
     fn default() -> Self {
-        Self { id: 0, name: "Mask 1".into(), visible: true, invert: false, components: Vec::new(), adjust: LocalAdjustments::default(), refine: 0.0 }
+        Self {
+            id: 0,
+            name: "Mask 1".into(),
+            visible: true,
+            invert: false,
+            components: Vec::new(),
+            adjust: LocalAdjustments::default(),
+            curve: ToneCurve::default(),
+            refine: 0.0,
+        }
     }
 }
 

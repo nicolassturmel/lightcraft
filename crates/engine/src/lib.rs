@@ -950,6 +950,8 @@ mod tests_libops;
 #[cfg(test)]
 mod tests_library;
 #[cfg(test)]
+mod tests_mask_curves;
+#[cfg(test)]
 mod tests_merge;
 #[cfg(test)]
 mod tests_organize;

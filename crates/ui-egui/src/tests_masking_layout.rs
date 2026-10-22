@@ -20,6 +20,7 @@ fn panel(width: f32, scale: f32, locale: Locale, describe: bool) -> (Vec<egui::e
     app.run("mask.add", json!({"kind": "subject", "name": LONG_NAME})).unwrap();
     app.ui.describe = describe.then(|| ("new".into(), LONG_NAME.repeat(4)));
     app.ui.detail_due = Some((100.0, 1));
+    app.ui.toggle_flyout("maskCurve");
     let photo = app.session.active().unwrap();
     let ctx = egui::Context::default();
     crate::i18n::set_language(locale);
@@ -87,6 +88,22 @@ fn masking_long_names_and_describe_controls_stay_inside_the_panel() {
             let button = widgets.iter().find(|(id, _)| id == "button:maskDescribeGo").unwrap().1;
             assert!(field.right() <= button.left(), "the prompt must not overlap Select");
             assert!(field.left() >= 24.0 && button.right() <= width - 22.0, "{locale:?} {width}: {field:?} {button:?}");
+        }
+    }
+}
+
+#[test]
+fn masking_curve_controls_fit_narrow_and_retina_panels() {
+    for locale in [Locale::En, Locale::De, Locale::PtBr] {
+        for width in [crate::state::RIGHT_WIDTH.min, crate::state::RIGHT_WIDTH.default, 330.0, crate::state::RIGHT_WIDTH.max] {
+            for scale in [1.0, 2.0] {
+                let (_, widgets) = panel(width, scale, locale, false);
+                let curves: Vec<_> = widgets.iter().filter(|(id, _)| id.starts_with("maskCurve") || id == "button:maskCurveReset").collect();
+                assert!(curves.len() >= 6, "curve graph and channel/reset controls are present");
+                for (id, rect) in curves {
+                    assert!(rect.left() >= 0.0 && rect.right() <= width + 0.5, "{locale:?} {width} {scale}: {id} {rect:?}");
+                }
+            }
         }
     }
 }

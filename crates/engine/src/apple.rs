@@ -1548,6 +1548,8 @@ mod tests {
         s.selection = Selection::single(id);
         let original = s.catalog.photo(id).unwrap().source.clone();
         s.execute("develop.set", &json!({"control":"light.exposure", "value":1.25})).unwrap();
+        s.execute("mask.add", &json!({"kind":"linear"})).unwrap();
+        s.execute("mask.curve", &json!({"channel":"blue", "points":[[0.0,0.03],[0.5,0.6],[1.0,1.0]]})).unwrap();
         {
             let _fault = lightcraft_catalog::safe_file::fail_writes_after(0);
             assert!(matches!(s.execute("photo.rate", &json!({"rating":4})), Err(crate::EngineError::NotSaved(_))));
@@ -1570,6 +1572,7 @@ mod tests {
         resumed.apply_photos_snapshot(projected(&["a"], Some(&dir))).unwrap();
         let p = resumed.catalog.photos().next().unwrap();
         assert_eq!(p.develop.light.exposure, 1.25);
+        assert_eq!(p.develop.masks[0].curve.blue[1].y, 0.6, "local curves survive in the Photos adjustment JSON");
         assert_eq!(p.rating, 4);
         assert_eq!(p.source, original);
         std::fs::remove_dir_all(dir).unwrap();

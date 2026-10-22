@@ -159,6 +159,8 @@ pub struct FinishParams {
     pub shadow_tint: f32,
     /// Tone curves (parametric ∘ point, per channel) on encoded values, 1024 entries each.
     pub curves: Option<[Lut1; 3]>,
+    /// One entry per active mask, in alpha-plane order. Identity curves need no tables.
+    pub mask_curves: Vec<Option<MaskCurve>>,
     /// Refine Saturation as 0..1 (1 = the curves' own saturation).
     pub refine_sat: f32,
     pub vig: Option<Vig>,
@@ -197,6 +199,11 @@ pub struct FinishParams {
     pub peak: f32,
 }
 
+pub struct MaskCurve {
+    pub luts: [Lut1; 3],
+    pub refine_sat: f32,
+}
+
 impl FinishParams {
     /// Parameters for a `w × h` render into `space`; `ev`/`air_pre` as in [`crate::Prepared`].
     #[allow(clippy::too_many_arguments)]
@@ -232,6 +239,9 @@ impl FinishParams {
             lut: crate::lut::get(&s.profile.id).map(|l| (l, (s.profile.amount / 100.0).clamp(0.0, 2.0) as f32)),
             ops: ColorOps::new(s),
             curves: curve_luts(&s.curve),
+            mask_curves: crate::masks::active(&s.masks)
+                .map(|m| curve_luts(&m.curve).map(|luts| MaskCurve { luts, refine_sat: (m.curve.refine_saturation / 100.0).clamp(0.0, 1.0) as f32 }))
+                .collect(),
             refine_sat: (s.curve.refine_saturation / 100.0).clamp(0.0, 1.0) as f32,
             vig: if effects { vignette(s) } else { None },
             to_out: space.from_working(),
@@ -628,6 +638,23 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
                 if fp.refine_sat < 1.0 {
                     e = refine_saturation(e0, e, fp.refine_sat);
                 }
+            }
+            // Curves are nonlinear: apply masks in their stored order, through the very same
+            // alpha planes as local sliders (including feathering, inversion and Amount).
+            for (mask, curve) in p.masks.iter().zip(&fp.mask_curves) {
+                let Some(curve) = curve else { continue };
+                let alpha = mask.alpha.data[i];
+                if alpha <= 0.0 {
+                    continue;
+                }
+                let before = e;
+                let mut after = std::array::from_fn(|k| {
+                    if hdr && before[k] > 1.0 { curve.luts[k].eval(1.0) + before[k] - 1.0 } else { curve.luts[k].eval(before[k]) }
+                });
+                if curve.refine_sat < 1.0 {
+                    after = refine_saturation(before, after, curve.refine_sat);
+                }
+                e = std::array::from_fn(|k| before[k] + (after[k] - before[k]) * alpha);
             }
             if let Some((amt, cell, rough, seed)) = *grain {
                 let n = out_to_norm.apply(Point::new(x as f64 + 0.5, y as f64 + 0.5));

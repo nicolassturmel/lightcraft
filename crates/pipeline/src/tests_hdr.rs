@@ -137,3 +137,27 @@ fn visualize_hdr_paints_only_what_rises_above_white() {
     let plain = render(&src, &raw(), &DevelopSettings::default(), &RenderRequest::fit(240, 240));
     assert_eq!(off.image.data, plain.image.data);
 }
+
+#[test]
+fn masked_curves_preserve_hdr_headroom_in_float_exports() {
+    use lightcraft_develop::{Mask, MaskComponent, MaskOp, MaskShape};
+    use lightcraft_geom::Point;
+    let source = sunset();
+    let mut settings = hdr_on(3.0);
+    let before = deep(&source, &settings, OutputDepth::F32Hdr);
+    let mut mask = Mask {
+        components: vec![MaskComponent {
+            name: None,
+            op: MaskOp::Add,
+            invert: false,
+            shape: MaskShape::Linear { start: Point::new(2.0, 0.5), end: Point::new(3.0, 0.5) },
+        }],
+        ..Default::default()
+    };
+    mask.curve.master = vec![Point::new(0.0, 0.0), Point::new(0.5, 0.6), Point::new(1.0, 0.95)];
+    settings.masks.push(mask);
+    let after = deep(&source, &settings, OutputDepth::F32Hdr);
+    assert_ne!(after, before);
+    assert!(after.iter().all(|v| v.is_finite() && (0.0..=8.0).contains(v)));
+    assert!(after.iter().copied().fold(0.0f32, f32::max) > 1.5, "local curves must not clip HDR highlights to SDR white");
+}
