@@ -294,6 +294,7 @@ fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
         let new = s.catalog.alloc_photo_id();
         let mut q = ph.clone();
         q.id = new;
+        q.exported = None;
         q.source = Source::File { path: dst.to_string_lossy().to_string() };
         q.file_name = dst.file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_default();
         // the same bytes, but its own photo: no duplicate-content clash, no shared history

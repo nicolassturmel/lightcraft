@@ -201,7 +201,7 @@ resource access, beyond PhotoKit's [network access option](https://developer.app
 which alone does not prohibit reading a local resource. Downloaded pixels are cached in memory
 at full, preview and thumbnail sizes. Their unedited linear Rec.2020 f32 pixels and Apple decoder
 facts are also written atomically under `Photos Adjustments/Original Cache/`, keyed by asset and
-source revision. This separate, recreatable cache has an 8 GiB budget and evicts older entries.
+source revision. This separate, recreatable cache has a 32 GiB budget and evicts older entries.
 Its header-only index loads on the library worker; UI availability checks perform no disk I/O.
 An export of an original evicted from RAM, or after restarting the app, reads this lossless local
 backing without PhotoKit, RAW decoding or network access. Editing never rewrites it. A changed
@@ -431,3 +431,30 @@ without an added default curve. The desktop and Web view share the same editor a
 Curves blend in stored mask order after the global curves and before grain, through the mask's
 coverage and Amount; CPU, GPU and high-bit-depth exports use the same curve tables. No original
 resource access or Apple mask inference is needed to change a curve on a cached source.
+
+
+## Export tags and filmstrip filters
+
+Completed image-file exports and confirmed copies in Photos > LightCraft mark the source as
+**Exported**, with the last completion time. Grid thumbnails carry a labelled badge; filmstrip
+thumbnails carry the same export icon with the time on hover. This annotation lives in the
+Photos adjustment description, survives restart and edit undo, and never changes the original.
+Rendering a preview or encoding bytes alone, a failed write, a skipped existing file and a
+cancelled photo that was never written do not set it. Late results cannot tag another library or
+a replaced source. This records exports made with this version onward; older unrecorded exports
+are not guessed from filenames. It means a photo has been exported, not that subsequent edits
+have been exported too.
+
+The filmstrip has its own visible filter row: rating operator (≥/= /≤), stars, picked/rejected/
+unflagged, Exported and Clear. It drives the same `library.filter` as the grid, combining the
+filters without changing the photos' ratings/flags. The row remains usable when the result is
+empty and scrolls horizontally in narrow layouts.
+
+**Refresh thumbnails** (`library.refreshThumbnails`) regenerates browsing/rendered previews and
+retries unavailable Photos thumbnails without clearing decoded downloaded originals, changing
+edits, enabling network access or rereading library metadata. Transient Photos preview failures
+retry only after a 30-second backoff, for visible/prefetched cells; unrelated edits and focus do
+not trigger retries. Empty/fully transparent preview buffers are rejected instead of cached as
+black thumbnails; opaque black photographs are valid. A missing thumbnail has an explicit
+waiting/error placeholder. The original cache budget is now 32 GiB (four times the former 8 GiB);
+it grows only as photos are explicitly downloaded, with the same bounded eviction policy.

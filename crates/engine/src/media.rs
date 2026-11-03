@@ -933,7 +933,7 @@ pub enum QuickSource {
 
 #[derive(Default)]
 struct PhotosPreviewGate {
-    errors: std::collections::HashMap<(Hash128, u64, u64), String>,
+    errors: std::collections::HashMap<(Hash128, u64, u64), (String, web_time::Instant)>,
 }
 
 /// Source/revision browsing cache shared by sizes, with bounded single-flight failure caching.
@@ -963,10 +963,12 @@ impl PhotosPreview {
                 }
                 // One source-sized read shared by grid, filmstrip and all thumbnail sizes/edits.
                 let failure_key = (self.cache_key, self.generation, self.epoch.load(std::sync::atomic::Ordering::Relaxed));
-                if let Some(error) = guard.errors.get(&failure_key) {
+                if let Some((error, at)) = guard.errors.get(&failure_key)
+                    && at.elapsed() < std::time::Duration::from_secs(30)
+                {
                     return Err(error.clone());
                 }
-                let image = match crate::apple::preview_photo(&self.asset, PHOTOS_PREVIEW_EDGE) {
+                let image = match crate::apple::preview_photo(&self.asset, PHOTOS_PREVIEW_EDGE).and_then(valid_photos_preview) {
                     Ok(image) => Arc::new(image),
                     Err(error) => {
                         if guard.errors.len() >= 128
@@ -974,7 +976,7 @@ impl PhotosPreview {
                         {
                             guard.errors.remove(&key);
                         }
-                        guard.errors.insert(failure_key, error.chars().take(2048).collect());
+                        guard.errors.insert(failure_key, (error.chars().take(2048).collect(), web_time::Instant::now()));
                         return Err(error);
                     }
                 };
@@ -995,6 +997,19 @@ impl PhotosPreview {
             data: small.data.into_iter().map(|p| p.map(|v| v.round().clamp(0.0, 255.0) as u8)).collect(),
         })
     }
+}
+
+/// A transparent/empty callback must not become a permanently black thumbnail. Opaque black
+/// photographs are valid: brightness is never used as a corruption test.
+fn valid_photos_preview(image: Rgba8) -> Result<Rgba8, String> {
+    if image.width == 0
+        || image.height == 0
+        || image.width.checked_mul(image.height) != Some(image.data.len())
+        || !image.data.iter().any(|pixel| pixel[3] > 0)
+    {
+        return Err("Photos supplied an empty preview; refresh thumbnails to retry".into());
+    }
+    Ok(image)
 }
 
 #[derive(Clone)]
@@ -1894,5 +1909,17 @@ mod tests {
         let pv = s.preview_job(id, 800, 600, true, &a).unwrap();
         assert_ne!(pv.key, s.render_job(id, 800, 600, false, true).unwrap().key);
         assert_eq!(*pv.settings, a);
+    }
+}
+
+#[cfg(test)]
+mod photos_preview_validation_tests {
+    use super::*;
+    #[test]
+    fn empty_transparent_previews_are_not_cached_as_black_but_black_photos_are_valid() {
+        assert!(valid_photos_preview(Rgba8::new(0, 0)).is_err());
+        assert!(valid_photos_preview(Rgba8::filled(2, 2, [0, 0, 0, 0])).is_err());
+        assert!(valid_photos_preview(Rgba8::filled(2, 2, [0, 0, 0, 255])).is_ok());
+        assert!(valid_photos_preview(Rgba8 { width: 2, height: 2, data: vec![[10, 20, 30, 255]] }).is_err());
     }
 }

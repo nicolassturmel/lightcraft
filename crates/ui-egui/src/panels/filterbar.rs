@@ -111,61 +111,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     let mut row2 = row(ui, 1.0);
     let ui = &mut row1;
 
-    // rating: operator + stars
-    caption(ui, "Rating");
-    let op_label = match f.rating_op {
-        RatingOp::AtLeast => "≥",
-        RatingOp::Exactly => "=",
-        RatingOp::AtMost => "≤",
-    };
-    picker(
-        app,
-        ui,
-        "ratingOp",
-        op_label,
-        false,
-        [("≥  at least", "atLeast", RatingOp::AtLeast), ("=  exactly", "exactly", RatingOp::Exactly), ("≤  at most", "atMost", RatingOp::AtMost)]
-            .into_iter()
-            .map(|(l, k, op)| (l.to_string(), json!({"ratingOp": k}), f.rating_op == op))
-            .collect(),
-    );
-    for i in 1..=5u8 {
-        let (r, resp) = ui.allocate_exact_size(vec2(17.0, 26.0), Sense::click());
-        register(ui.ctx(), format!("filter:star{i}"), r);
-        let filled = i <= f.rating;
-        let c = if filled {
-            t.star
-        } else if resp.hovered() {
-            t.text_label
-        } else {
-            t.icon
-        };
-        paint(ui.painter(), Rect::from_center_size(r.center(), vec2(14.0, 14.0)), if filled { Icon::StarFilled } else { Icon::Star }, c);
-        if resp.clicked() {
-            filter(app, json!({"rating": if f.rating == i { 0 } else { i }}));
-        }
-    }
-    ui.add_space(14.0);
-
-    // flags (one at a time; click again to clear)
-    caption(ui, "Flag");
-    for (id, icon, flag, tip) in [
-        ("pick", Icon::FlagPick, Flag::Pick, "Picked"),
-        ("reject", Icon::FlagReject, Flag::Reject, "Rejected"),
-        ("none", Icon::Circle, Flag::None, "Unflagged"),
-    ] {
-        let on = f.flag == Some(flag);
-        let color = match flag {
-            Flag::Pick if on => t.pick,
-            Flag::Reject if on => t.reject,
-            _ => Color32::TRANSPARENT,
-        };
-        let resp = toggle(ui, id, on, tip, |p, r, c| paint(p, r, icon, if color == Color32::TRANSPARENT { c } else { color }));
-        if resp.clicked() {
-            filter(app, json!({"flag": if on { Value::Null } else { json!(id) }}));
-        }
-    }
-    ui.add_space(14.0);
+    rating_flags(app, ui);
 
     // colour labels
     caption(ui, "Label");
@@ -302,5 +248,91 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
         if ui.add_enabled(filtering, egui::Button::new(crate::i18n::tr("Save Current Filter as Preset…"))).clicked() {
             crate::panels::dialogs::prompt(app, "Save Filter Preset", "Preset name", "", "filter.savePreset", json!({}), "name");
         }
+    });
+}
+
+/// Shared library/filmstrip filters: these never change the photo's rating or flag.
+pub(super) fn rating_flags(app: &mut LightcraftApp, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
+    let f = app.session.filter.clone();
+    // rating: operator + stars
+    caption(ui, "Rating");
+    let op_label = match f.rating_op {
+        RatingOp::AtLeast => "≥",
+        RatingOp::Exactly => "=",
+        RatingOp::AtMost => "≤",
+    };
+    picker(
+        app,
+        ui,
+        "ratingOp",
+        op_label,
+        false,
+        [("≥  at least", "atLeast", RatingOp::AtLeast), ("=  exactly", "exactly", RatingOp::Exactly), ("≤  at most", "atMost", RatingOp::AtMost)]
+            .into_iter()
+            .map(|(l, k, op)| (l.to_string(), json!({"ratingOp": k}), f.rating_op == op))
+            .collect(),
+    );
+    for i in 1..=5u8 {
+        let (r, resp) = ui.allocate_exact_size(vec2(17.0, 26.0), Sense::click());
+        register(ui.ctx(), format!("filter:star{i}"), r);
+        let filled = i <= f.rating;
+        let c = if filled {
+            t.star
+        } else if resp.hovered() {
+            t.text_label
+        } else {
+            t.icon
+        };
+        paint(ui.painter(), Rect::from_center_size(r.center(), vec2(14.0, 14.0)), if filled { Icon::StarFilled } else { Icon::Star }, c);
+        if resp.clicked() {
+            filter(app, json!({"rating": if f.rating == i { 0 } else { i }}));
+        }
+    }
+    ui.add_space(14.0);
+
+    // flags (one at a time; click again to clear)
+    caption(ui, "Flag");
+    for (id, icon, flag, tip) in [
+        ("pick", Icon::FlagPick, Flag::Pick, "Picked"),
+        ("reject", Icon::FlagReject, Flag::Reject, "Rejected"),
+        ("none", Icon::Circle, Flag::None, "Unflagged"),
+    ] {
+        let on = f.flag == Some(flag);
+        let color = match flag {
+            Flag::Pick if on => t.pick,
+            Flag::Reject if on => t.reject,
+            _ => Color32::TRANSPARENT,
+        };
+        let resp = toggle(ui, id, on, tip, |p, r, c| paint(p, r, icon, if color == Color32::TRANSPARENT { c } else { color }));
+        if resp.clicked() {
+            filter(app, json!({"flag": if on { Value::Null } else { json!(id) }}));
+        }
+    }
+    ui.add_space(14.0);
+}
+
+/// A compact filter row above the filmstrip, available even when no photo matches.
+pub(super) fn filmstrip(app: &mut LightcraftApp, ui: &mut egui::Ui) {
+    egui::ScrollArea::horizontal().id_salt("filmstrip-filters-scroll").auto_shrink([false, true]).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            caption(ui, "Filter");
+            rating_flags(app, ui);
+            let exported = app.session.filter.exported == Some(true);
+            if toggle(ui, "exported", exported, "Exported", |p, r, c| paint(p, r, Icon::Share, c)).clicked() {
+                filter(app, json!({"exported": if exported { Value::Null } else { json!(true) }}));
+            }
+            let clear = ui.add_enabled(app.session.filter != Default::default(), egui::Button::new(crate::i18n::tr("Clear")));
+            register(ui.ctx(), "button:filmFilterClear", clear.rect);
+            if clear.clicked() {
+                app.ui.search.clear();
+                let _ = app.run("library.clearFilter", json!({}));
+            }
+            ui.separator();
+            if crate::widgets::icon_button(ui, "refreshThumbnails", Icon::Rotate, vec2(26.0, 26.0), false, true, "Refresh thumbnails").clicked() {
+                let _ = app.run("library.refreshThumbnails", json!({}));
+            }
+        });
     });
 }

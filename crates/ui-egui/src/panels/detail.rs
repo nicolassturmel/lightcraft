@@ -346,7 +346,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     let full = ui.max_rect();
     let fullscreen = app.ui.fullscreen;
     let show_film = app.ui.filmstrip && !fullscreen;
-    let film_h = if show_film { t.film_h } else { 0.0 };
+    let film_h = if show_film { t.film_h + 36.0 } else { 0.0 };
     let canvas = Rect::from_min_max(full.min, pos2(full.right(), full.bottom() - film_h));
     app.canvas_rect = Some(canvas);
     if show_film {
@@ -2080,6 +2080,11 @@ pub(crate) fn filmstrip(app: &mut LightcraftApp, ui: &mut egui::Ui, r: Rect) {
     let t = Tokens::get(ui.ctx());
     ui.painter().rect_filled(r, 0.0, t.canvas);
     ui.painter().rect_filled(Rect::from_min_size(r.min, vec2(r.width(), 4.0)), 0.0, Color32::from_gray(0x20));
+    let header = Rect::from_min_max(r.min + vec2(8.0, 4.0), pos2(r.right() - 8.0, r.top() + 36.0));
+    let mut filter_ui = ui.new_child(egui::UiBuilder::new().max_rect(header));
+    register(ui.ctx(), "filmstripFilters", header);
+    super::filterbar::filmstrip(app, &mut filter_ui);
+    let r = Rect::from_min_max(pos2(r.left(), r.top() + 36.0), r.max);
     let ids = app.session.visible_cloned();
     let active = app.session.selection.active;
     let cell_w = 120.0;
@@ -2144,6 +2149,7 @@ pub(crate) fn filmstrip(app: &mut LightcraftApp, ui: &mut egui::Ui, r: Rect) {
                     && let Some(ph) = app.session.catalog.photo(*id)
                 {
                     film_badges(p, &t, fr, ph);
+                    super::grid::exported_badge(ui, fr, ph, true);
                 }
                 if let Some(st) = app.session.catalog.stack_of(*id) {
                     let text =
@@ -2153,6 +2159,14 @@ pub(crate) fn filmstrip(app: &mut LightcraftApp, ui: &mut egui::Ui, r: Rect) {
                     p.rect_filled(br, 7.5, Color32::from_black_alpha(170));
                     crate::icons::paint(p, Rect::from_min_size(br.min + vec2(4.0, 2.0), vec2(11.0, 11.0)), crate::icons::Icon::Stack, Color32::WHITE);
                     p.galley(pos2(br.min.x + 17.0, br.center().y - g.size().y / 2.0), g, Color32::WHITE);
+                }
+            } else {
+                let error = app.renderer.failure(Slot::ThumbQuick(*id)).or_else(|| app.renderer.failure(Slot::Thumb(*id)));
+                let text = if error.is_some() { "!" } else { "…" };
+                let placeholder = ui.interact(img_area, egui::Id::new(("film-preview-state", id.0)), Sense::hover());
+                p.text(img_area.center(), Align2::CENTER_CENTER, text, t.font(18.0), t.text_dim);
+                if let Some(error) = error {
+                    placeholder.on_hover_text(format!("{error}\n{}", crate::i18n::tr("Refresh thumbnails")));
                 }
             }
             if resp.clicked() && app.ui.view == crate::state::ViewMode::Compare {

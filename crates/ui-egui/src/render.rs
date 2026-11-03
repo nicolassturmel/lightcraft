@@ -200,6 +200,8 @@ pub struct Renderer {
     /// The catalog revision seen at the last poll: a failure is retried once the catalog changes
     /// (a relinked or re-imported file).
     catalog_rev: u64,
+    /// Transient Photos preview failures retry on a slow clock, independent of edits/focus.
+    thumbnail_retry_at: web_time::Instant,
     /// Prefetch slot → key of the last job submitted (each runs once).
     prefetched: HashMap<Slot, u64>,
     /// Variant key → frame it was last asked for (LRU of [`Slot::Variant`] textures).
@@ -266,6 +268,7 @@ impl Renderer {
             quick_tried: HashMap::new(),
             failed: HashMap::new(),
             catalog_rev: 0,
+            thumbnail_retry_at: web_time::Instant::now(),
             prefetched: HashMap::new(),
             variant_used: HashMap::new(),
             variant_want: 0,
@@ -296,6 +299,7 @@ impl Renderer {
             .collect();
         self.failed.retain(|s, _| !matches!(s, Slot::Thumb(_) | Slot::ThumbQuick(_)));
         self.thumb_inputs.retain(|id, _| !failed.contains(id));
+        self.quick_tried.retain(|slot, _| !matches!(slot, Slot::Thumb(id) | Slot::ThumbQuick(id) if failed.contains(id)));
     }
 
     pub fn want_thumbnail(&mut self, id: PhotoId) {
@@ -647,6 +651,10 @@ impl Renderer {
 
     /// Collect finished jobs into textures. Returns true if anything changed.
     pub fn poll(&mut self, ctx: &egui::Context, session: &mut Session) -> bool {
+        if session.apple_library.is_some() && self.thumbnail_retry_at.elapsed() >= std::time::Duration::from_secs(30) {
+            self.thumbnail_retry_at = web_time::Instant::now();
+            self.retry_failed_thumbnails();
+        }
         let cache = &session.media.rendered;
         let generation = cache.generation();
         if self.preview_generation.as_ref().is_some_and(|(old, g)| old.as_ptr() != Arc::as_ptr(cache) || *g != generation) {
@@ -996,6 +1004,23 @@ mod thumbnail_tests {
         assert!(r.thumb_current(&p, 384, 10));
         r.catalog_rev = 1;
         assert!(!r.thumb_current(&p, 384, 10));
+    }
+
+    #[test]
+    fn transient_photos_thumbnail_failure_retries_once_after_backoff() {
+        let mut r = Renderer::default();
+        let mut session = Session::new().with_apple_photos(None);
+        let slot = Slot::Thumb(PhotoId(1));
+        r.failed.insert(slot, (77, "temporary Photos error".into(), 0));
+        r.quick_tried.insert(slot, 77);
+        let ctx = egui::Context::default();
+        r.poll(&ctx, &mut session);
+        assert!(r.failed.contains_key(&slot), "no retry loop on every frame or edit");
+        r.thumbnail_retry_at = web_time::Instant::now() - std::time::Duration::from_secs(31);
+        r.poll(&ctx, &mut session);
+        assert!(!r.failed.contains_key(&slot));
+        assert!(!r.quick_tried.contains_key(&slot), "the quick-request guard must allow resubmission");
+        assert!(r.request_needed(slot, 77, 8));
     }
 
     #[test]

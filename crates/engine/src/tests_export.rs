@@ -440,3 +440,34 @@ fn hdr_avif_export_is_pq_rec2020() {
     // a photo without an HDR edit exports as an ordinary (sRGB) AVIF
     assert!(nclx(&sdr.bytes).is_none_or(|c| c[3] != 16));
 }
+
+#[test]
+fn completed_file_exports_are_tagged_but_encoding_skips_and_failed_writes_are_not() {
+    use crate::export::{Destination, export_batch};
+    let mut s = Session::with_demo();
+    let ids: Vec<_> = s.visible_cloned().into_iter().take(3).collect();
+    let options = ExportOptions::from_json(&json!({"format":"png","longEdge":32}));
+    // Encoding bytes alone is not an export to a destination.
+    export_photo(&mut s, ids[0], &options, 1).unwrap();
+    assert!(s.catalog.photo(ids[0]).unwrap().exported.is_none());
+    let to = Destination { dir: "out".into(), exact: None };
+    let mut writes = 0;
+    let result = export_batch(
+        &mut s,
+        &ids,
+        &options,
+        &to,
+        &mut |_, _| {
+            writes += 1;
+            if writes == 2 { Err("disk full".into()) } else { Ok(()) }
+        },
+        &|_| false,
+    );
+    assert!(result.is_err());
+    assert_eq!(writes, 2, "stop at the first failed write");
+    assert!(s.catalog.photo(ids[0]).unwrap().exported.is_some(), "the first file was successfully written");
+    assert!(ids[1..].iter().all(|id| s.catalog.photo(*id).unwrap().exported.is_none()));
+    let skip = ExportOptions::from_json(&json!({"format":"png","longEdge":32,"conflict":"skip"}));
+    export_batch(&mut s, &[ids[1]], &skip, &to, &mut |_, _| panic!("a skipped file must not be written"), &|_| true).unwrap();
+    assert!(s.catalog.photo(ids[1]).unwrap().exported.is_none());
+}

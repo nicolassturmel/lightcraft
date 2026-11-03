@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 use crate::LightcraftApp;
 
 pub struct ExportTask {
+    tracking: Option<lightcraft_engine::export_tracking::ExportTracking>,
     pub total: usize,
     /// Photos started so far and the file in progress.
     pub progress: Arc<Mutex<(usize, String)>>,
@@ -42,6 +43,7 @@ pub fn start(app: &mut LightcraftApp, items: Vec<PreparedExport>, opts: ExportOp
     }
     let write = app.services.write_shared.clone().ok_or("no background writer")?;
     let total = items.len();
+    let tracking = lightcraft_engine::export_tracking::ExportTracking::new(&app.session, items.iter().map(|item| item.photo));
     let progress = Arc::new(Mutex::new((0, String::new())));
     let cancel = Arc::new(AtomicBool::new(false));
     let (tx, rx) = channel();
@@ -62,7 +64,7 @@ pub fn start(app: &mut LightcraftApp, items: Vec<PreparedExport>, opts: ExportOp
     work();
     let guard = app.session.activity.start("export", "Exporting", Cancel::Flag(cancel.clone()));
     guard.progress(0, total as u64);
-    app.export = Some(ExportTask { total, progress, cancel, rx, guard });
+    app.export = Some(ExportTask { tracking: Some(tracking), total, progress, cancel, rx, guard });
     Ok(json!({"background": true, "total": total}))
 }
 
@@ -108,7 +110,7 @@ pub fn start_contact_sheet(app: &mut LightcraftApp, params: &Value) -> Result<Va
     work();
     let row = app.session.activity.start("export", "Exporting contact sheet", Cancel::Flag(cancel.clone()));
     row.progress(0, total as u64);
-    app.export = Some(ExportTask { total, progress, cancel, rx, guard: row });
+    app.export = Some(ExportTask { tracking: None, total, progress, cancel, rx, guard: row });
     Ok(json!({"background": true, "total": total}))
 }
 
@@ -119,9 +121,11 @@ pub fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
         Ok(r) => {
             let cancelled = task.cancel.load(Ordering::Relaxed);
             let total = task.total;
+            let tracking = task.tracking.clone();
             app.export = None;
             let msg = match r {
                 Ok(files) => {
+                    let tag_error = tracking.and_then(|tracking| tracking.record_files(&mut app.session, &files).err());
                     let sheet = files.first().filter(|f| f["contactSheet"] == true);
                     let ok = files.iter().filter(|f| f.get("path").is_some()).count();
                     let failed: Vec<&Value> = files.iter().filter(|f| f.get("error").is_some()).collect();
@@ -139,6 +143,9 @@ pub fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
                     }
                     if cancelled {
                         m += " · cancelled";
+                    }
+                    if let Some(error) = tag_error {
+                        m += &format!(" · Export tag could not be saved: {error}");
                     }
                     app.last_export_result = Some(json!({"files": files, "cancelled": cancelled}));
                     m

@@ -249,6 +249,9 @@ pub struct Photo {
     pub develop: Arc<DevelopSettings>,
     #[serde(default)]
     pub edited: Option<String>,
+    /// Last successful image export, as an ISO time. Bookkeeping, independent of edits/undo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exported: Option<String>,
     #[serde(default)]
     pub versions: Vec<Version>,
     #[serde(default)]
@@ -340,6 +343,7 @@ impl Photo {
             label: None,
             develop: Arc::new(DevelopSettings::default()),
             edited: None,
+            exported: None,
             versions: Vec::new(),
             history: Vec::new(),
             deleted: false,

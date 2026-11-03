@@ -209,6 +209,7 @@ fn op_variants_are_versioned() {
             Op::SetEmbeddedLens { .. } => 4,
             Op::SetKeyword { .. } => 5,
             Op::SetFolderRecord { .. } => 6,
+            Op::SetExported { .. } => 8,
         }
     }
     fn source_since(source: &Source) -> u32 {
@@ -217,7 +218,7 @@ fn op_variants_are_versioned() {
             Source::ApplePhotos { .. } => 7,
         }
     }
-    let newest_op = since(&Op::SetFolderRecord { folder: "/".into(), record: None });
+    let newest_op = since(&Op::SetExported { id: PhotoId(1), exported: None });
     let newest_source = since(&Op::AddPhoto {
         photo: Box::new(Photo::new(
             PhotoId(1),

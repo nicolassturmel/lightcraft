@@ -60,7 +60,15 @@ pub fn specs() -> Vec<CommandSpec> {
             Some("Cmd+S"),
             "{id?:active} → export a full-size JPEG at quality 100 in the Photos album LightCraft, with adjustment metadata attached to the copy; never edit the original",
             crate::apple::has_photo,
-            |s, p| { crate::apple::prepare_copy(s, p).and_then(|job| job.run()).map_err(crate::EngineError::Other) }
+            |s, p| {
+                let job = crate::apple::prepare_copy(s, p).map_err(crate::EngineError::Other)?;
+                let tracking = job.tracking.clone();
+                let mut saved = job.run().map_err(crate::EngineError::Other)?;
+                if let Err(error) = tracking.record_all(s) {
+                    saved["exportTagWarning"] = serde_json::json!(error.to_string());
+                }
+                Ok(saved)
+            }
         ),
         cmd!(
             "photo.reopenApplePhotosRecipe",

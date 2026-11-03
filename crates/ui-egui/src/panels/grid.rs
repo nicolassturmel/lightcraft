@@ -1,5 +1,24 @@
 //! Photo Grid (justified rows) and Square Grid. Virtualized: only visible cells request thumbnails.
 
+/// Export bookkeeping is deliberately distinct from the edited/rating/flag badges.
+pub(super) fn exported_badge(ui: &egui::Ui, image: Rect, photo: &lightcraft_catalog::Photo, compact: bool) {
+    let Some(when) = &photo.exported else { return };
+    let t = Tokens::get(ui.ctx());
+    let label = crate::i18n::tr("Exported");
+    let galley = ui.painter().layout_no_wrap(label.into(), t.semibold(10.0), Color32::WHITE);
+    let width = if compact { 18.0 } else { galley.size().x + 24.0 };
+    let top = image.top() + if photo.copy_name.is_some() && !compact { 29.0 } else { 3.0 };
+    let r = Rect::from_min_size(pos2(image.right() - width - 3.0, top), vec2(width, 18.0));
+    ui.painter().rect_filled(r, 4.0, Color32::from_black_alpha(190));
+    paint(ui.painter(), Rect::from_min_size(r.min + vec2(3.0, 3.0), vec2(12.0, 12.0)), Icon::Share, Color32::from_rgb(123, 217, 160));
+    if !compact {
+        ui.painter().galley(r.min + vec2(20.0, 2.0), galley, Color32::WHITE);
+    }
+    register(ui.ctx(), format!("badge:exported:{}", photo.id.0), r);
+    ui.interact(r, egui::Id::new(("exported-badge", photo.id.0, compact)), Sense::hover())
+        .on_hover_text(format!("{label} · {}", crate::i18n::display_time(when)));
+}
+
 #[cfg(test)]
 #[path = "grid_header_tests.rs"]
 mod header_tests;
@@ -599,6 +618,7 @@ fn cell(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square
             p.circle(pos2(right - 12.0, bar.center().y), 5.0, label_color(l), Stroke::new(1.0, Color32::from_black_alpha(120)));
         }
     }
+    exported_badge(ui, img_rect, &photo, false);
     if let Some(name) = &photo.copy_name {
         // virtual copy: a folded-corner tag at the top right
         let g = p.layout_no_wrap(name.clone(), t.semibold(10.5), Color32::WHITE);

@@ -32,6 +32,8 @@ pub struct Filter {
     pub labels: Vec<ColorLabel>,
     pub kind: Option<MediaKind>,
     pub edited: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exported: Option<bool>,
     pub album: Option<AlbumId>,
     /// Show "Recently Deleted" instead of the library.
     pub deleted: bool,
@@ -141,6 +143,7 @@ fn token_matches(p: &Photo, tok: &str) -> bool {
             "person" | "who" => has_person(p, val),
             "type" | "kind" => format!("{:?}", p.kind).eq_ignore_ascii_case(val),
             "edited" => (val == "true" || val == "yes") == p.is_edited(),
+            "exported" => (val == "true" || val == "yes") == p.exported.is_some(),
             "date" => p.captured.as_deref().is_some_and(|c| c.starts_with(val)),
             "copy" | "virtual" => (val == "true" || val == "yes") == p.copy_of.is_some(),
             "name" | "file" => p.file_name.to_lowercase().contains(val),
@@ -192,6 +195,9 @@ impl Filter {
         }
         if let Some(e) = self.edited {
             v.push(if e { "edited".into() } else { "unedited".into() });
+        }
+        if let Some(e) = self.exported {
+            v.push(if e { "exported".into() } else { "not exported".into() });
         }
         for (name, val) in [
             ("keyword", &self.keyword),
@@ -275,6 +281,9 @@ impl Filter {
             return false;
         }
         if self.edited.is_some_and(|e| e != p.is_edited()) {
+            return false;
+        }
+        if self.exported.is_some_and(|e| e != p.exported.is_some()) {
             return false;
         }
         if let Some(rs) = &self.rule_set

@@ -73,6 +73,7 @@ fn virtual_copy(s: &mut Session, src: PhotoId, name: Option<&str>) -> Result<Opt
     let id = s.catalog.alloc_photo_id();
     let mut c = (*orig).clone();
     c.id = id;
+    c.exported = None;
     c.copy_of = Some(master);
     c.copy_name = Some(name.map_or_else(|| format!("Copy {n}"), str::to_string));
     c.versions.clear();

@@ -30,6 +30,7 @@ pub mod denoise;
 pub mod devices;
 pub mod display;
 pub mod export;
+pub mod export_tracking;
 pub mod face_download;
 #[cfg(not(target_arch = "wasm32"))]
 mod faces_index;
@@ -115,6 +116,7 @@ fn single_photo(op: &Op, depth: usize) -> Option<PhotoId> {
         Op::SetDevelop { id, .. }
         | Op::SetRating { id, .. }
         | Op::SetFlag { id, .. }
+        | Op::SetExported { id, .. }
         | Op::SetLabel { id, .. }
         | Op::SetMeta { id, .. }
         | Op::SetVersions { id, .. }
@@ -492,7 +494,6 @@ impl Session {
 
     /// Apply an op that is LightCraft's own bookkeeping rather than something the user did (faces found by the background
     /// scan): journaled like any op, but not an undo step, and it leaves the redo stack alone.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn apply_system(&mut self, op: Op) -> Result<()> {
         if self.apple_library.is_some() {
             apple::annotation_op(&op, 0).map_err(EngineError::Other)?;

@@ -67,6 +67,8 @@ pub struct Draft {
     pub label: Option<ColorLabel>,
     pub meta: Meta,
     pub edited: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exported: Option<String>,
     pub versions: Vec<Version>,
     pub history: Vec<HistoryStep>,
 }
@@ -80,6 +82,7 @@ impl Draft {
             label: p.label,
             meta: p.meta.clone(),
             edited: p.edited.clone(),
+            exported: p.exported.clone(),
             versions: p.versions.clone(),
             history: p.history.clone(),
         }
@@ -91,6 +94,7 @@ impl Draft {
         p.label = self.label;
         p.meta = self.meta.clone();
         p.edited = self.edited.clone();
+        p.exported = self.exported.clone();
         p.versions = self.versions.clone();
         p.history = self.history.clone();
     }
@@ -241,6 +245,7 @@ pub(crate) fn annotation_op(op: &Op, depth: usize) -> Result<(), String> {
         }
         Op::SetRating { .. }
         | Op::SetFlag { .. }
+        | Op::SetExported { .. }
         | Op::SetLabel { .. }
         | Op::SetDevelop { .. }
         | Op::SetMeta { .. }
@@ -556,7 +561,7 @@ impl Session {
 
 fn draft_photos(op: &Op, ids: &mut Vec<PhotoId>) {
     match op {
-        Op::SetVersions { id, .. } | Op::SetHistory { id, .. } | Op::PushHistory { id, .. } => {
+        Op::SetExported { id, .. } | Op::SetVersions { id, .. } | Op::SetHistory { id, .. } | Op::PushHistory { id, .. } => {
             if !ids.contains(id) {
                 ids.push(*id);
             }
@@ -647,6 +652,7 @@ pub fn import_into_photos(paths: &[String]) -> Result<Value, String> {
 }
 
 pub struct CopyJob {
+    pub tracking: crate::export_tracking::ExportTracking,
     render: crate::export::PreparedExport,
     asset: String,
     recipe: Value,
@@ -740,7 +746,7 @@ pub fn prepare_copy(s: &mut Session, params: &Value) -> Result<CopyJob, String> 
     let options =
         crate::export::ExportOptions { format: crate::export::ExportFormat::Jpeg, quality: 100, resize: None, limit_kb: None, ..Default::default() };
     let render = crate::export::prepare_export(s, id, &options, 1)?;
-    Ok(CopyJob { render, asset, recipe, ai_assets: s.media.ai_assets.clone() })
+    Ok(CopyJob { tracking: crate::export_tracking::ExportTracking::new(s, [id]), render, asset, recipe, ai_assets: s.media.ai_assets.clone() })
 }
 
 impl CopyJob {
@@ -1209,6 +1215,31 @@ mod tests {
         assert_ne!(new.photos_preview.as_ref().unwrap().cache_key, source_key);
         old.photos_preview.as_ref().unwrap().cache.clear();
         assert!(old.run().rendered.err().unwrap().contains("cache was cleared"));
+    }
+
+    #[test]
+    fn export_tags_reopen_from_photos_descriptions_and_refresh_keeps_originals() {
+        let dir = std::env::temp_dir().join(format!("lc-export-tags-{}-{}", std::process::id(), lightcraft_preview::next_tick()));
+        let mut s = Session::new().with_apple_photos(Some(dir.clone()));
+        s.apply_photos_snapshot(projected(&["a"], Some(&dir))).unwrap();
+        let id = s.apple_library.as_ref().unwrap().asset_ids["a"];
+        s.selection = Selection::single(id);
+        let pixels = Arc::new(lightcraft_raster::Rgb32f::filled(8, 6, [0.1, 0.2, 0.3]));
+        s.media.insert(id, SourceLevel::Full, pixels.clone());
+        let before = s.catalog.photo(id).unwrap().develop.clone();
+        let tracker = crate::export_tracking::ExportTracking::new(&s, [id]);
+        tracker.record_all(&mut s).unwrap();
+        let stamped = s.catalog.photo(id).unwrap().exported.clone();
+        let generation = s.media.rendered.generation();
+        s.execute("library.refreshThumbnails", &json!({})).unwrap();
+        assert_ne!(s.media.rendered.generation(), generation);
+        assert!(Arc::ptr_eq(&s.media.get(id, SourceLevel::Full).unwrap(), &pixels));
+        assert_eq!(s.catalog.photo(id).unwrap().develop, before);
+        let mut reopened = Session::new().with_apple_photos(Some(dir.clone()));
+        reopened.apply_photos_snapshot(projected(&["a"], Some(&dir))).unwrap();
+        assert_eq!(reopened.catalog.photo(id).unwrap().exported, stamped);
+        assert!(!dir.join("catalog.snap").exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

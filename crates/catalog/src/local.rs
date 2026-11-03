@@ -110,6 +110,7 @@ impl Photo {
             && self.flag == crate::Flag::None
             && self.label.is_none()
             && self.edited.is_none()
+            && self.exported.is_none()
             && self.history.is_empty()
             && self.versions.is_empty()
             && *self.develop == self.import_defaults()
@@ -271,6 +272,7 @@ impl Op {
             Op::RemovePhoto { id }
             | Op::SetRating { id, .. }
             | Op::SetFlag { id, .. }
+            | Op::SetExported { id, .. }
             | Op::SetLabel { id, .. }
             | Op::SetDevelop { id, .. }
             | Op::SetMeta { id, .. }

@@ -179,13 +179,19 @@ fn start_copy(app: &mut LightcraftApp, params: &Value) -> Result<Value, String> 
         return Err("A Photos copy is already being saved".into());
     }
     let job = lightcraft_engine::apple::prepare_copy(&mut app.session, params)?;
+    let tracking = job.tracking.clone();
     crate::tasks::spawn(
         app,
         SAVE,
         Some("applePhotosCopy"),
         move || job.run(),
-        |app, ctx, result| match result {
+        move |app, ctx, result| match result {
             Ok(saved) => {
+                if let Err(error) = tracking.record_all(&mut app.session) {
+                    app.toast_error(ctx, format!("Copy saved, but its export tag could not be saved: {error}"));
+                    app.apple_photos.last_copy = Some(saved);
+                    return;
+                }
                 if let Some(warning) = saved.get("warning").and_then(Value::as_str) {
                     app.toast_error(ctx, warning);
                 } else {

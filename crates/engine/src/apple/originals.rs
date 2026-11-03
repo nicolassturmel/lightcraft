@@ -15,7 +15,7 @@ use std::{
 const MAGIC: &[u8; 8] = b"LCPRAW01";
 const HEADER_LIMIT: usize = 16_384;
 const PIXEL_LIMIT: usize = 100_000_000;
-const DISK_BYTES: u64 = 8 << 30;
+pub const DISK_BYTES: u64 = 32 << 30;
 
 #[derive(Serialize, Deserialize)]
 struct Header {

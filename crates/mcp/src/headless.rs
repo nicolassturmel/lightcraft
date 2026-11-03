@@ -84,6 +84,7 @@ impl Headless {
         let dir = p.get("dir").and_then(Value::as_str).unwrap_or("");
         let write = &mut lightcraft_engine::export::write_file;
         let items = prepare_batch(&mut self.session, &ids, &opts)?;
+        let tracking = lightcraft_engine::export_tracking::ExportTracking::new(&self.session, ids.iter().copied());
         let total = items.len();
         let mut hook = self.progress.take();
         let mut cancelled = false;
@@ -99,6 +100,7 @@ impl Headless {
                 !cancelled
             },
         )?;
+        tracking.record_files(&mut self.session, &files).map_err(|e| format!("Images exported, but their tags could not be saved: {e}"))?;
         if !cancelled && let Some(hook) = hook.as_mut() {
             cancelled = !hook(total, total, "");
         }

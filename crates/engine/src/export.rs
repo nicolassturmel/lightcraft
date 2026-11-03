@@ -1578,7 +1578,19 @@ pub fn export_batch(
     exists: &dyn Fn(&str) -> bool,
 ) -> Result<Vec<serde_json::Value>, String> {
     let items = prepare_batch(session, ids, o)?;
-    run_batch(items, o, to, write, exists, true, &mut |_, _| true)
+    let tracking = crate::export_tracking::ExportTracking::new(session, ids.iter().copied());
+    let lanes = export_parallelism(items.len());
+    let mut placer = Placer::new(o, to, write, exists, true);
+    let mut result = run_batch_with(items, &mut placer, &mut |_, _| true, lanes);
+    // A later failure must not erase receipts for files already written successfully.
+    let files = result.as_ref().unwrap_or(&placer.out);
+    if let Err(error) = tracking.record_files(session, files)
+        && let Ok(files) = &mut result
+        && let Some(file) = files.first_mut()
+    {
+        file["exportTagWarning"] = serde_json::json!(error.to_string());
+    }
+    result
 }
 
 /// Write an exported or rendered file on disk: its folder is created if needed, and the file is
@@ -1889,7 +1901,9 @@ impl<'a> Placer<'a> {
         match written {
             Ok((path, files, sidecars)) => {
                 self.taken.extend(files);
-                self.out.push(json!({"path": path, "width": e.width, "height": e.height, "bytes": e.bytes.len(), "sidecars": sidecars}));
+                self.out.push(
+                    json!({"photo": photo.0, "path": path, "width": e.width, "height": e.height, "bytes": e.bytes.len(), "sidecars": sidecars}),
+                );
             }
             Err(err) if self.stop_on_error => return Err(err),
             Err(err) => self.out.push(json!({"photo": photo.0, "file": file, "error": err})),

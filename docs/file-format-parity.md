@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (created; formats measured from the code and the target's Info.plist) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-03 · **Change:** minor (catalog format 8 records successful exports; format coverage unchanged) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 Every format Lightroom reads or writes, with our support, fidelity and tests. Camera raw formats are
 deep enough to have their own document: [raw-parity.md](raw-parity.md).
@@ -74,6 +74,17 @@ Remaining: **30–55 h** (AVIF decode 8–15 h if a permissive decoder is writte
 
 ## Revision history
 
+- 2026-11-03: APPLE.17 adds catalog format 8 for durable export annotations and filtering; old catalogs upgrade, newer ones remain protected from older readers. Format coverage/readiness unchanged.
+
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-10 | major | Created from the code and the installed Lightroom's document types |
+
+
+## Catalog export bookkeeping (APPLE.17)
+
+Catalog format 8 adds `Photo.exported` and `Op::SetExported` for the last successful export time,
+and the optional `Filter.exported` constraint. Older catalogs remain readable and upgrade on open;
+older LightCraft builds refuse format 8 instead of discarding its annotations. Apple Photos mode
+keeps this annotation in its per-asset JSON description and creates no catalog. Exporting does
+not create a develop-history or undo step and does not modify source metadata.

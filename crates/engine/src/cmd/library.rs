@@ -350,7 +350,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Filter",
             [],
             None,
-            "partial Filter: {text?, rating?, ratingOp?: atLeast|exactly|atMost, flag?: pick|reject|none|null, label?, kind?, merged?: hdr|panorama|hdrPanorama|any, edited?, date?, libraryFolder?: a path from library.folders, keyword?, person?, camera?}",
+            "partial Filter: {text?, rating?, ratingOp?: atLeast|exactly|atMost, flag?: pick|reject|none|null, label?, kind?, merged?: hdr|panorama|hdrPanorama|any, edited?, exported?: bool|null, date?, libraryFolder?: a path from library.folders, keyword?, person?, camera?}",
             always,
             |s, p| {
                 let mut v = serde_json::to_value(&s.filter).unwrap_or_default();
@@ -1414,6 +1414,19 @@ pub fn specs() -> Vec<CommandSpec> {
             s.media.clear_sources();
             ok()
         }),
+        cmd!(
+            "library.refreshThumbnails",
+            "Refresh thumbnails",
+            ["View"],
+            None,
+            "{} — regenerate browsing previews without rereading the library or removing downloaded originals",
+            always,
+            |s, _| {
+                s.media.rendered.clear();
+                s.media.retry_photos_previews();
+                ok()
+            }
+        ),
     ]
 }
 

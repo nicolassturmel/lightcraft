@@ -20,6 +20,8 @@ pub fn photo_summary(p: &Photo) -> Value {
         "flag": p.flag,
         "label": p.label,
         "edited": p.is_edited(),
+        "exported": p.exported.is_some(),
+        "exportedAt": p.exported,
         "title": p.meta.title,
         "keywords": p.meta.keywords,
         "camera": p.meta.camera,

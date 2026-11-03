@@ -92,6 +92,10 @@ pub enum Op {
         id: PhotoId,
         label: Option<ColorLabel>,
     },
+    SetExported {
+        id: PhotoId,
+        exported: Option<String>,
+    },
     SetDevelop {
         id: PhotoId,
         settings: Arc<DevelopSettings>,
@@ -504,6 +508,13 @@ impl Catalog {
             Op::SetFlag { id, flag } => {
                 let p = self.photo_mut(id)?;
                 Op::SetFlag { id, flag: std::mem::replace(&mut p.flag, flag) }
+            }
+            Op::SetExported { id, exported } => {
+                if exported.as_ref().is_some_and(|time| time.len() > 128) {
+                    return Err(CatalogError::Corrupt("invalid export time".into()));
+                }
+                let p = self.photo_mut(id)?;
+                Op::SetExported { id, exported: std::mem::replace(&mut p.exported, exported) }
             }
             Op::SetLabel { id, label } => {
                 let p = self.photo_mut(id)?;
