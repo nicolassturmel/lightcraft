@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-03 · **Change:** minor (catalog format 8 records successful exports; format coverage unchanged) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-19 · **Change:** minor (compact Photos resource cache; scores and catalog format unchanged) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 Every format Lightroom reads or writes, with our support, fidelity and tests. Camera raw formats are
 deep enough to have their own document: [raw-parity.md](raw-parity.md).
@@ -74,6 +74,8 @@ Remaining: **30–55 h** (AVIF decode 8–15 h if a permissive decoder is writte
 
 ## Revision history
 
+- 2026-11-19: APPLE.18 retains compressed resources from explicit Photos downloads, reuses the Apple decoder locally and checks exact float pixels; legacy RGB32f backing compacts losslessly offline. No new source retrieval, catalog version or score change.
+
 - 2026-11-03: APPLE.17 adds catalog format 8 for durable export annotations and filtering; old catalogs upgrade, newer ones remain protected from older readers. Format coverage/readiness unchanged.
 
 | Date | Change | Summary |
@@ -88,3 +90,12 @@ and the optional `Filter.exported` constraint. Older catalogs remain readable an
 older LightCraft builds refuse format 8 instead of discarding its annotations. Apple Photos mode
 keeps this annotation in its per-asset JSON description and creates no catalog. Exporting does
 not create a develop-history or undo step and does not modify source metadata.
+
+## Disposable Photos backing (APPLE.18)
+
+`LCPRAW02` is a cache container, independent of catalog format 8 and permanent adjustment JSON. It
+keeps the existing encoded resource without recompression, or bit-exact blocked RGB32f Deflate when
+no smaller resource is available. `LCPRAW01` remains readable and can be compacted offline without
+PhotoKit. Header/footer bounds, resource hashes and full decoded-pixel hashes are validated. A
+changed Apple decoder result requires an explicit cache rebuild. This does not extend image format
+coverage or turn the cache into an independent library. See [Apple integration](apple-integration.md).

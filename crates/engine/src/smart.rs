@@ -245,6 +245,7 @@ pub fn mark_look_checked(dir: &Path) -> Result<(), String> {
 pub fn load(path: &Path) -> Result<crate::media::DecodedSource, String> {
     let b = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     decode(&b).map(|(image, camera_tone)| crate::media::DecodedSource {
+        original: None,
         capture: None,
         image: Arc::new(image),
         info: None,

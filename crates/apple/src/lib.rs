@@ -19,6 +19,8 @@ pub use watch::{PhotosEvent, PhotosWatch};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct RawMetadata {
+    #[serde(default, rename = "originalSuffix")]
+    pub original_suffix: Option<String>,
     pub width: usize,
     pub height: usize,
     pub temperature: f64,
@@ -32,9 +34,36 @@ pub struct RawMetadata {
 }
 
 pub struct RawImage {
+    /// The exact encoded resource already retrieved by an explicit Photos download.
+    pub original: Option<EncodedOriginal>,
     pub metadata: RawMetadata,
     /// Oriented, row-major, extended linear sRGB; highlight values above one are preserved.
     pub pixels: Vec<[f32; 4]>,
+}
+
+pub struct EncodedOriginal {
+    pub bytes: Vec<u8>,
+    pub suffix: String,
+}
+
+/// Decode an already cached resource through the same Apple path; never calls PhotoKit.
+pub fn decode_cached_original(bytes: &[u8], suffix: &str, raw: bool) -> Result<RawImage, String> {
+    if bytes.is_empty() || bytes.len() > 512_000_000 || suffix.is_empty() || suffix.len() > 16 || !suffix.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Err("Invalid cached Photos resource".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::io::Write;
+        let mut input = tempfile::Builder::new().suffix(&format!(".{suffix}")).tempfile().map_err(|e| e.to_string())?;
+        input.write_all(bytes).map_err(|e| e.to_string())?;
+        native::decode_image(serde_json::json!({"operation":if raw {"cached-raw-decode"} else {"cached-image-decode"},
+            "path":input.path(), "maxEdge":100_000, "network":false}))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = raw;
+        Err("Cached Photos resources require Apple image decoding on macOS".into())
+    }
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -116,7 +145,8 @@ pub fn photos_metadata(asset: &str) -> Result<Value, String> {
     invoke(&serde_json::json!({"operation":"photos-metadata", "asset":asset, "network":false}), Duration::from_secs(45))
 }
 
-/// Decode directly through PhotoKit. The resource file exists only for the duration of decoding.
+/// Explicit PhotoKit download. The caller may retain the returned encoded bytes in its bounded
+/// disposable cache; all bridge-owned resource files are removed after decoding.
 pub fn decode_photos(asset: &str, max_edge: usize, network: bool) -> Result<RawImage, String> {
     // Resource access itself is explicit, even when Photos already has a local original.
     // A network=false request must not silently copy/decode it on selection or prefetch.
@@ -420,6 +450,10 @@ mod native {
         let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
         let output = dir.path().join("rgba.f32");
         request["output"] = json!(output);
+        let original_path = dir.path().join("original.resource");
+        if request["operation"] == "photos-decode" {
+            request["cacheOriginal"] = json!(original_path);
+        }
         let value = invoke(&request, Duration::from_secs(180))?;
         let metadata: RawMetadata = serde_json::from_value(value).map_err(|e| e.to_string())?;
         let count = checked_pixels(metadata.width, metadata.height, 100_000_000)?;
@@ -438,7 +472,16 @@ mod native {
             }
             pixels.push(pixel);
         }
-        Ok(RawImage { metadata, pixels })
+        let original = if original_path.is_file() {
+            let suffix = metadata.original_suffix.as_deref().ok_or("Missing cached Photos resource type")?;
+            if suffix.is_empty() || suffix.len() > 16 || !suffix.bytes().all(|b| b.is_ascii_alphanumeric()) {
+                return Err("Invalid cached Photos resource type".into());
+            }
+            Some(EncodedOriginal { bytes: bounded_read(&original_path, 512_000_000)?, suffix: suffix.to_string() })
+        } else {
+            None
+        };
+        Ok(RawImage { original, metadata, pixels })
     }
 
     pub fn mask(

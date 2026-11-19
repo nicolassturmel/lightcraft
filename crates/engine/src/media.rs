@@ -168,6 +168,8 @@ impl Twin {
 /// Pixels and the source interpretation learned while decoding; they must be cached together.
 #[derive(Clone)]
 pub struct DecodedSource {
+    /// Only held while an explicit Photos download writes its bounded encoded disk backing.
+    pub original: Option<Arc<EncodedOriginal>>,
     pub capture: Option<Arc<crate::apple::PhotosMetadata>>,
     pub image: Arc<Rgb32f>,
     pub info: Option<SourceInfo>,
@@ -178,9 +180,14 @@ pub struct DecodedSource {
     pub denoised: Option<Arc<Twin>>,
 }
 
+pub struct EncodedOriginal {
+    pub bytes: Vec<u8>,
+    pub suffix: String,
+}
+
 impl DecodedSource {
     pub fn new(image: Arc<Rgb32f>, info: Option<SourceInfo>) -> Self {
-        DecodedSource { capture: None, image, info, camera_tone: None, denoised: None }
+        DecodedSource { original: None, capture: None, image, info, camera_tone: None, denoised: None }
     }
 
     /// The picture to develop for a Denoise `amount` (0 to 1, see [`DevelopSettings::denoise_amount`]): the plain one,
@@ -214,7 +221,12 @@ impl DecodedSource {
     pub fn bytes(&self) -> usize {
         let mattes = self.info.as_ref().and_then(|i| i.mattes.as_ref()).map_or(0, |m| m.bytes());
         let mattes = mattes + self.info.as_ref().and_then(|i| i.local_tone.as_ref()).map_or(0, |t| t.map.gains.len() * 4);
-        self.image.data.len() * 12 + 64 + std::mem::size_of::<SourceInfo>() + mattes + self.denoised.as_ref().map_or(0, |t| t.bytes())
+        self.image.data.len() * 12
+            + 64
+            + std::mem::size_of::<SourceInfo>()
+            + mattes
+            + self.denoised.as_ref().map_or(0, |t| t.bytes())
+            + self.original.as_ref().map_or(0, |o| o.bytes.len())
     }
 
     /// What to render these pixels against: the decoder's facts, else `header` (the catalog's)
@@ -241,7 +253,7 @@ pub enum SourceRef {
         /// The photo has a cached denoised picture: load it with the plain one (see [`PairLoader`]).
         denoise: Option<(DenoiseSpec, PairLoader)>,
     },
-    /// A resource owned by Apple Photos. No persistent original copy or file path.
+    /// A resource owned by Apple Photos. Normal reads never retrieve its original.
     ApplePhotos {
         asset: String,
         max_edge: usize,
@@ -290,6 +302,7 @@ impl SourceRef {
                                     return Err("the cached AI Denoise picture could not be read; clear the denoise cache and retry".into());
                                 }
                                 Ok(DecodedSource {
+                                    original: None,
                                     capture: None,
                                     image: Arc::new(image),
                                     info: Some(info),

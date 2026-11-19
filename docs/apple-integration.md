@@ -187,10 +187,10 @@ view offers that action until decoded original pixels are available; Photos brow
 remain in the library. RAW+JPEG pairs prefer the
 RAW original, including `alternatePhoto`; rendered assets use their current Photos rendition.
 The public PhotoKit resource API requires a short-lived decode file. Its enclosing temporary
-directory is removed after decoding, errors or bridge timeouts. There is no permanent import of
-Photos source files and no LightCraft `catalog.log` or `catalog.snap` for the Photos session.
-Rendered previews and active decoded sources have memory caches. Explicitly downloaded originals
-also have lossless local pixel backing, described below.
+directory is removed after decoding, errors or bridge timeouts. Photos remains the source library;
+there is no LightCraft `catalog.log` or `catalog.snap` for the Photos session. Rendered previews and
+active decoded sources have memory caches. Explicit downloads also retain a bounded, disposable
+local resource cache, described below. Clearing it never changes Photos or the edit descriptions.
 
 Use **Download original** on an individual grid photo, or on the selected photo in the sidebar,
 to load just that original from Photos, using iCloud if needed. The background task shows **Downloading…** and
@@ -199,13 +199,42 @@ editing and exports never enable original retrieval automatically. Recipe reads 
 access disabled. This policy is enforced before the Rust helper call and before native PhotoKit
 resource access, beyond PhotoKit's [network access option](https://developer.apple.com/documentation/photos/phassetresourcerequestoptions/isnetworkaccessallowed),
 which alone does not prohibit reading a local resource. Downloaded pixels are cached in memory
-at full, preview and thumbnail sizes. Their unedited linear Rec.2020 f32 pixels and Apple decoder
-facts are also written atomically under `Photos Adjustments/Original Cache/`, keyed by asset and
-source revision. This separate, recreatable cache has a 32 GiB budget and evicts older entries.
-Its header-only index loads on the library worker; UI availability checks perform no disk I/O.
-An export of an original evicted from RAM, or after restarting the app, reads this lossless local
-backing without PhotoKit, RAW decoding or network access. Editing never rewrites it. A changed
-source revision cannot reuse old pixels; an uncached original still needs the per-photo button.
+at full, preview and thumbnail sizes. Under `Photos Adjustments/Original Cache/`, APPLE.18 stores
+an `LCPRAW02` container keyed by asset and source revision. It retains the exact compressed resource
+(CR3, JPEG, HEIC, etc.) already fetched by that explicit action when smaller than RGB32f pixels;
+there is no second PhotoKit read. Reopening it uses the same Apple Core Image decoder through the
+persistent service, without Photos authorization, resource retrieval or network access. The
+result stays in the existing RAM source cache across edits. Full dimensions, decoder facts and a
+hash of every initial working-space float bit are saved. Encoded bytes and decoded pixels are
+checked on read; a changed decoder result reports an explicit rebuild requirement instead of
+silently altering an edit or export. No JPEG re-encoding, half-float quantization or downscaling is
+used for this backing.
+
+Legacy `LCPRAW01` RGB32f caches remain readable. Offline maintenance can compact them locally to
+lossless XOR/channel-byte-plane Deflate blocks (`photos_cache compact`, app stopped); it never
+retrieves their original resource or touches permanent edits. The same fallback covers downloads
+without a smaller encoded resource. Header checks, bounded block decompression, exact pixel hashes,
+completion footers and atomic replacement reject damaged/partial caches. Startup reads only the
+small header/footer index on the library worker; it never performs a migration or pixel decode.
+UI availability checks perform no disk I/O. The separate recreatable cache retains its 32 GiB
+physical-byte budget and evicts older entries. Editing never rewrites it. A changed source revision
+cannot reuse old pixels; an uncached original still needs the per-photo button.
+
+APPLE.18 validation (2026-11-19): the local CC0 Canon R8 C-RAW fixture (6000×4000) uses
+14,607,341 bytes of encoded cache versus 288,000,183 bytes for the old float file (94.9% smaller).
+Three independent cache reads preserve every float bit; a full-size quality-100 JPEG is
+byte-identical. The legacy lossless fallback uses 213,290,965 bytes (25.9% smaller). On this Mac,
+legacy/fallback reads measured 0.72/1.02 s; encoded cold reads including Apple decoding and full
+pixel verification measured 3.0–6.4 s under concurrent build load. Warm editing still uses RAM.
+These are one camera/file measurements, not a camera-coverage or decode-speed guarantee. Synthetic
+regressions cover local PNG decoding, repeated explicit retries retaining the encoded file,
+legacy migration, source revisions, exact HDR/negative/negative-zero bits, corruption, truncation,
+atomic-write failure and the physical-byte budget. `crates/engine/examples/photos_cache.rs`
+reproduces local-file checks without PhotoKit; run maintenance with the desktop stopped. Native
+Mac QA uses an isolated procedural-file session: exposure and undo restore identical full-size PNG
+pixels, the input file hash stays unchanged, and Web/TCP return the same engine settings. The
+1600×1000 native screenshot was inspected; no Photos library/export was used for this QA.
+
 Exports never silently substitute a lower-resolution image. **Import Photos…** and dropped image files create
 assets directly in Photos and retain the input files. File imports are limited to 200 per call;
 use Photos for importing folders and managing albums, names, deletions and original metadata.

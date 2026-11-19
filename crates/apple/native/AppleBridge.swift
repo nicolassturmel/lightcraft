@@ -46,6 +46,7 @@ struct Request: Decodable {
     var allowEmpty: Bool?
     var model: String?
     var mask: String?
+    var cacheOriginal: String?
 }
 
 func required(_ value: String?, _ name: String) throws -> String {
@@ -413,6 +414,21 @@ func decodePhotos(_ request: Request) async throws -> [String: Any] {
             if let error { continuation.resume(throwing: error) } else { continuation.resume() }
         }
     }
+    var result = try decodePhotoFile(request, input: input, isRaw: isRaw)
+    // Reuse the bytes fetched by this explicit Download original action. This is a disposable
+    // cache resource, not an import, and never starts a second PhotoKit request.
+    if let cache = request.cacheOriginal,
+       let size = try input.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+       size > 0, size <= 512_000_000 {
+        try FileManager.default.copyItem(at: input, to: URL(fileURLWithPath: cache))
+        result["originalSuffix"] = suffix
+    }
+    return result
+}
+
+// Disk-cache reads use exactly the original decode path, without PhotoKit or authorization.
+@available(macOS 12.0, *)
+func decodePhotoFile(_ request: Request, input: URL, isRaw: Bool) throws -> [String: Any] {
     if isRaw {
         var rawRequest = request
         rawRequest.operation = "raw-decode"; rawRequest.path = input.path
@@ -420,6 +436,7 @@ func decodePhotos(_ request: Request) async throws -> [String: Any] {
         if let metadata = try? imageMetadata(input) { result["capture"] = metadata["capture"]; result["fileSize"] = metadata["fileSize"] }
         return result
     }
+    let output = URL(fileURLWithPath: try required(request.output, "output"))
     guard let image = CIImage(contentsOf: input, options: [.applyOrientationProperty: true]) else {
         throw BridgeError("Apple Core Image cannot decode this Photos image")
     }
@@ -930,6 +947,12 @@ func perform(_ request: Request) async throws -> [String: Any] {
     case "photos-decode":
         guard #available(macOS 12.0, *) else { throw BridgeError("Photos image decoding requires macOS 12 or later") }
         result = try await decodePhotos(request)
+    case "cached-raw-decode", "cached-image-decode":
+        guard #available(macOS 12.0, *) else { throw BridgeError("Cached Photos decoding requires macOS 12 or later") }
+        guard request.network != true else { throw BridgeError("Cached image decoding never enables network access") }
+        result = try autoreleasepool {
+            try decodePhotoFile(request, input: URL(fileURLWithPath: required(request.path, "path")), isRaw: request.operation == "cached-raw-decode")
+        }
     case "photos-save-copy": result = try await savePhotosCopy(request)
     case "photos-metadata": result = try await photosMetadata(request)
     case "image-metadata": result = try imageMetadata(URL(fileURLWithPath: required(request.path, "path")))

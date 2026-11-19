@@ -1,6 +1,6 @@
 # Gaps: where LightCraft falls short of Lightroom
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-03 · **Change:** minor (export tags, filmstrip filters and Photos cache recovery; scores unchanged) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-19 · **Change:** minor (compact Photos resource cache; scores and catalog format unchanged) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 Every known shortfall, one entry each, ranked by user impact (how many Lightroom users hit it, and
 how hard it blocks them), then by effort. **Agents pick work from the top** (the first entry nobody is
@@ -48,6 +48,12 @@ Photos descriptions and rendered exports carry the same adjustments. Local effec
 brush-feel gaps and broad mask-selection accuracy remain open; readiness scores are unchanged.
 
 APPLE.17 adds persistent successful-export badges, shared rating/flag/export filters above the filmstrip, a 32 GiB downloaded-original cache, explicit thumbnail refresh and bounded transient-preview recovery. No additional source access or parity-score change.
+
+APPLE.18 replaces uncompressed downloaded-original backing with the resource bytes already supplied
+by the explicit download, plus exact pixel/decoder checks. Legacy caches compact locally with
+lossless blocked Deflate. Photos stays the sole source library; selection, edits and exports never
+retrieve originals. Cold resource-cache reads decode locally; warm edits keep the existing RAM source.
+Camera/decoder coverage gaps and all scores remain.
 
 ## Ranked
 
@@ -107,6 +113,8 @@ Beta-blocking gaps (B) total **~230–430 h**; with the stability and platform w
 - 2026-10-05: compressed NEF (#86). The older history is in [ROADMAP.md](../ROADMAP.md#progress-log).
 
 ## Revision history
+
+- 2026-11-19: APPLE.18 retains compressed resources from explicit Photos downloads, reuses the Apple decoder locally and checks exact float pixels; legacy RGB32f backing compacts losslessly offline. No new source retrieval, catalog version or score change.
 
 - 2026-11-03: APPLE.17 records successful image exports without adding undo steps; filmstrip rating/flag/export filters, original-preserving preview refresh and 32 GiB downloaded-original backing. Breadth/readiness unchanged.
 

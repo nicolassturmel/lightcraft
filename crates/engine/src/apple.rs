@@ -582,28 +582,45 @@ pub fn decode_photo(asset: &str, max_edge: usize, network: bool) -> Result<crate
     #[cfg(target_os = "macos")]
     {
         let decoded = lightcraft_apple::decode_photos(asset, max_edge, network)?;
-        let matrix = lightcraft_color::SRGB.to_space(&lightcraft_color::WORKING);
-        let image = lightcraft_raster::Rgb32f {
-            width: decoded.metadata.width,
-            height: decoded.metadata.height,
-            data: decoded.pixels.into_iter().map(|[r, g, b, _]| matrix.apply_f32([r, g, b])).collect(),
-        };
-        let info = lightcraft_pipeline::SourceInfo {
-            raw: decoded.metadata.raw,
-            as_shot_temp: decoded.metadata.temperature.round(),
-            as_shot_tint: decoded.metadata.tint.round(),
-            ..Default::default()
-        };
-        let mut source = crate::media::DecodedSource::new(Arc::new(image), Some(info));
-        source.capture =
-            decoded.metadata.capture.as_ref().and_then(|fields| metadata::from_fields(fields, decoded.metadata.file_size).ok()).map(Arc::new);
-        Ok(source)
+        Ok(decoded_photos_source(decoded))
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (asset, max_edge, network);
         Err("Apple Photos decoding is available only on macOS".into())
     }
+}
+
+/// Decode only the bounded bytes already held by the local cache. No PhotoKit access.
+pub fn decode_cached_original(bytes: &[u8], suffix: &str, raw: bool) -> Result<crate::media::DecodedSource, String> {
+    #[cfg(target_os = "macos")]
+    return lightcraft_apple::decode_cached_original(bytes, suffix, raw).map(decoded_photos_source);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (bytes, suffix, raw);
+        Err("Cached Photos resources require the macOS desktop engine".into())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn decoded_photos_source(decoded: lightcraft_apple::RawImage) -> crate::media::DecodedSource {
+    let matrix = lightcraft_color::SRGB.to_space(&lightcraft_color::WORKING);
+    let image = lightcraft_raster::Rgb32f {
+        width: decoded.metadata.width,
+        height: decoded.metadata.height,
+        data: decoded.pixels.into_iter().map(|[r, g, b, _]| matrix.apply_f32([r, g, b])).collect(),
+    };
+    let info = lightcraft_pipeline::SourceInfo {
+        raw: decoded.metadata.raw,
+        as_shot_temp: decoded.metadata.temperature.round(),
+        as_shot_tint: decoded.metadata.tint.round(),
+        ..Default::default()
+    };
+    let mut source = crate::media::DecodedSource::new(Arc::new(image), Some(info));
+    source.original = decoded.original.map(|o| Arc::new(crate::media::EncodedOriginal { bytes: o.bytes, suffix: o.suffix }));
+    source.capture =
+        decoded.metadata.capture.as_ref().and_then(|fields| metadata::from_fields(fields, decoded.metadata.file_size).ok()).map(Arc::new);
+    source
 }
 
 pub fn preview_photo(asset: &str, max_edge: usize) -> Result<lightcraft_raster::Rgba8, String> {
@@ -703,13 +720,16 @@ pub fn prepare_download(s: &Session, params: &Value) -> Result<DownloadJob, Stri
 
 impl DownloadJob {
     pub fn run(&self) -> Result<DownloadedOriginal, String> {
-        let full = match self.cache.as_ref().and_then(|cache| cache.get(&self.origin)) {
-            Some(cached) => cached.load(usize::MAX).or_else(|_| self.source.load_source())?,
-            None => self.source.load_source()?,
-        };
+        if let Some(cached) = self.cache.as_ref().and_then(|cache| cache.get(&self.origin))
+            && let Ok(full) = cached.load(usize::MAX)
+        {
+            return Ok(DownloadedOriginal::from_source(full));
+        }
+        let mut full = self.source.load_source()?;
         if let Some(cache) = &self.cache {
             cache.store(&self.origin, &full)?;
         }
+        full.original = None; // the encoded bytes are now on disk; RAM keeps only decoded pixels
         Ok(DownloadedOriginal::from_source(full))
     }
 }
